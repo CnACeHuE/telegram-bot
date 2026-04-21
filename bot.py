@@ -16,7 +16,7 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
 
 # --- БАЗА ДАННЫХ ---
-conn = sqlite3.connect("abode_gods_v16.db", check_same_thread=False)
+conn = sqlite3.connect("abode_gods_v17.db", check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("""CREATE TABLE IF NOT EXISTS users 
                   (user_id INTEGER PRIMARY KEY, username TEXT, 
@@ -68,8 +68,8 @@ async def transfer_points(message: types.Message):
         await message.answer(f"📦 {message.from_user.first_name} передал {message.reply_to_message.from_user.first_name} {amount} 💠")
     except: pass
 
-# --- 2. ЛОТЕРЕЯ ---
-@dp.message_handler(lambda m: m.text and (m.text.lower().startswith('лотерея') or m.text.lower().startswith('/lottery')))
+# --- 2. ЛОТЕРЕЯ (деп, лотерея) ---
+@dp.message_handler(lambda m: m.text and (m.text.lower().startswith(('лотерея', 'деп')) or m.text.lower().startswith('/lottery')))
 async def lottery_handler(message: types.Message):
     if not await check_access(message): return
     user_id = message.from_user.id
@@ -80,10 +80,13 @@ async def lottery_handler(message: types.Message):
     if bet < 10: return
     
     cursor.execute("SELECT power_points FROM users WHERE user_id = ?", (user_id,))
-    if cursor.fetchone()[0] < bet: return await message.reply("Недостаточно сил!")
+    balance = cursor.fetchone()[0]
+    if balance < bet: 
+        return await message.reply(f"Недостаточно сил! Баланс: {balance} 💠")
 
     cursor.execute("UPDATE users SET power_points = power_points - ? WHERE user_id = ?", (bet, user_id))
     r = random.random() * 100
+    
     if r < 0.2: mult = 100
     elif r < 0.7: mult = 50
     elif r < 2.2: mult = 10
@@ -96,16 +99,19 @@ async def lottery_handler(message: types.Message):
     cursor.execute("UPDATE users SET power_points = power_points + ? WHERE user_id = ?", (win, user_id))
     conn.commit()
     
-    if mult >= 50: res = f"🎰 ДЖЕКПОТ! x{mult}\n💰 Выигрыш: {win} 💠"
-    elif mult > 1: res = f"🎰 Крупная удача! x{mult}\n💎 Забрал: {win} 💠"
-    elif mult == 1: res = f"🎰 Возврат! x1\n💠 Твои {win} 💠 при тебе."
-    else: res = f"🎰 Мимо! x0\n💀 Ставка {bet} 💠 ушла в эфир."
+    if mult >= 50:
+        res = f"🎰 ДЖЕКПОТ! x{mult}\n💰 Выигрыш: {win} 💠"
+    elif mult > 1:
+        res = f"🎰 Крупная удача! x{mult}\n💎 Забрал: {win} 💠"
+    elif mult == 1:
+        res = f"🎰 Возврат! x{mult}\n💠 Твои {win} 💠 при тебе."
+    else:
+        res = f"🎰 Мимо! x0\n💀 Ставка {bet} 💠 ушла в эфир."
     await message.reply(res)
 
 # --- 3. АДМИНКА (ГИВ, КАРА, БОЖЕСТВО) ---
 @dp.message_handler(lambda m: m.text and any(m.text.lower().startswith(x) for x in ["гив", "награда", "кара", "зб", "божество+", "божество-"]))
 async def admin_handler(message: types.Message):
-    # Проверка на Главного Админа или роль 'admin' в БД
     cursor.execute("SELECT role FROM users WHERE user_id = ?", (message.from_user.id,))
     res_role = cursor.fetchone()
     is_mod = res_role[0] == 'admin' if res_role else False
@@ -117,18 +123,16 @@ async def admin_handler(message: types.Message):
     target_id = message.reply_to_message.from_user.id
     target_name = f"@{message.reply_to_message.from_user.username}" if message.reply_to_message.from_user.username else "юзер"
     
-    # Логика Божества (только для Главного Админа)
     if message.from_user.id == ADMIN_ID:
-        if "божество+" in text:
+        if text.startswith("божество+"):
             cursor.execute("UPDATE users SET role = 'admin' WHERE user_id = ?", (target_id,))
             await message.answer(f"⚡️ {target_name} возведен в ранг Божества!")
             conn.commit(); return
-        elif "божество-" in text:
+        elif text.startswith("божество-"):
             cursor.execute("UPDATE users SET role = 'player' WHERE user_id = ?", (target_id,))
             await message.answer(f"☁️ {target_name} лишен божественных сил.")
             conn.commit(); return
 
-    # Логика Гив/Кара
     try:
         val = int(text.split()[1])
         if text.startswith(("гив", "награда")):
