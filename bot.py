@@ -1,3 +1,4 @@
+
 import logging
 import sqlite3
 import os
@@ -15,7 +16,7 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
 
 # --- БАЗА ДАННЫХ ---
-conn = sqlite3.connect("abode_gods_v6.db", check_same_thread=False)
+conn = sqlite3.connect("abode_gods_v7.db", check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("""CREATE TABLE IF NOT EXISTS users 
                   (user_id INTEGER PRIMARY KEY, username TEXT, 
@@ -37,51 +38,11 @@ async def is_admin(user_id):
     res = cursor.fetchone()
     return res and res[0] == 'admin'
 
-# --- 1. ПРОФИЛЬ (/ME, МИ, /YOU) ---
-@dp.message_handler(commands=['me', 'you'], chat_type=[types.ChatType.GROUP, types.ChatType.SUPERGROUP])
-@dp.message_handler(lambda m: m.text and m.text.lower() == 'ми', chat_type=[types.ChatType.GROUP, types.ChatType.SUPERGROUP])
-async def profile_handler(message: types.Message):
-    target = message.reply_to_message.from_user if (message.text.startswith('/you') and message.reply_to_message) else message.from_user
-    cursor.execute("SELECT power_points, msg_count FROM users WHERE user_id = ?", (target.id,))
-    res = cursor.fetchone()
-    if res:
-        await message.answer(f"👤 {target.full_name}\n💠 Очки: {res[0]}\n📈 Ранг: {get_rank(res[1])}")
-    else:
-        await message.answer("Юзер еще не зарегистрирован в базе.")
-
-# --- 2. ЛОТЕРЕЯ (/LOTTERY, ЛОТЕРЕЯ) ---
-@dp.message_handler(commands=['lottery'], chat_type=[types.ChatType.GROUP, types.ChatType.SUPERGROUP])
-@dp.message_handler(lambda m: m.text and m.text.lower() == 'лотерея', chat_type=[types.ChatType.GROUP, types.ChatType.SUPERGROUP])
-async def lottery_handler(message: types.Message):
-    user_id = message.from_user.id
-    cursor.execute("SELECT power_points FROM users WHERE user_id = ?", (user_id,))
-    res = cursor.fetchone()
-    
-    if not res or res[0] < 50:
-        return await message.reply("Лотерея стоит 50 💠. У тебя недостаточно сил!")
-
-    cursor.execute("UPDATE users SET power_points = power_points - 50 WHERE user_id = ?", (user_id,))
-    
-    r = random.random() * 100
-    mult = 0
-    if r <= 0.1: mult = 50   # 0.1% шанс на x50
-    elif r <= 3: mult = 10   # 3% шанс на x10
-    elif r <= 15: mult = 3   # 12% шанс на x3
-    elif r <= 50: mult = 1   # 35% шанс вернуть своё
-    
-    win = 50 * mult
-    cursor.execute("UPDATE users SET power_points = power_points + ? WHERE user_id = ?", (win, user_id))
-    conn.commit()
-    
-    status = "Удача!" if mult > 1 else "Бывает..."
-    await message.reply(f"🎰 {status} Множитель x{mult}. Получено {win} 💠")
-
-# --- 3. АДМИН-КОМАНДЫ (ГИВ, КАРА) ---
-@dp.message_handler(lambda m: any(m.text.lower().startswith(c) for c in ["гив", "награда", "кара", "зб", "божество+", "божество-"]))
+# --- 1. АДМИН-БЛОК (САМЫЙ ВЕРХ) ---
+@dp.message_handler(lambda m: any(m.text.lower().startswith(c) for c in ["гив", "награда", "кара", "зб", "божество+", "божество-"]), chat_type=[types.ChatType.GROUP, types.ChatType.SUPERGROUP])
 async def admin_handler(message: types.Message):
     if not await is_admin(message.from_user.id): return
     if not message.reply_to_message: return
-
     text = message.text.lower()
     args = text.split()
     target_id = message.reply_to_message.from_user.id
@@ -97,46 +58,87 @@ async def admin_handler(message: types.Message):
         amount = int(args[1])
         if any(x in text for x in ["гив", "награда"]):
             cursor.execute("UPDATE users SET power_points = power_points + ? WHERE user_id = ?", (amount, target_id))
-            await message.answer(f"✨ Милость Властителя: {target_name} +{amount} 💠")
+            await message.answer(f"✨ Милость: {target_name} +{amount} 💠")
         elif any(x in text for x in ["кара", "зб"]):
             cursor.execute("UPDATE users SET power_points = power_points - ? WHERE user_id = ?", (amount, target_id))
-            await message.answer(f"🔥 Гнев Властителя: {target_name} -{amount} 💠")
+            await message.answer(f"🔥 Гнев: {target_name} -{amount} 💠")
     conn.commit()
 
+# --- 2. КОМАНДЫ ПРОФИЛЯ ---
+@dp.message_handler(commands=['me', 'you'], chat_type=[types.ChatType.GROUP, types.ChatType.SUPERGROUP])
+@dp.message_handler(lambda m: m.text and m.text.lower() in ['ми', 'профиль'], chat_type=[types.ChatType.GROUP, types.ChatType.SUPERGROUP])
+async def profile_handler(message: types.Message):
+    target = message.reply_to_message.from_user if (message.text.startswith('/you') and message.reply_to_message) else message.from_user
+    cursor.execute("SELECT power_points, msg_count FROM users WHERE user_id = ?", (target.id,))
+    res = cursor.fetchone()
+    if res:
+        await message.answer(f"👤 {target.full_name}\n💠 Очки: {res[0]}\n📈 Ранг: {get_rank(res[1])}")
+
+# --- 3. ЛОТЕРЕЯ ---
+@dp.message_handler(commands=['lottery'], chat_type=[types.ChatType.GROUP, types.ChatType.SUPERGROUP])
+@dp.message_handler(lambda m: m.text and m.text.lower() == 'лотерея', chat_type=[types.ChatType.GROUP, types.ChatType.SUPERGROUP])
+async def lottery_handler(message: types.Message):
+    user_id = message.from_user.id
+    cursor.execute("SELECT power_points FROM users WHERE user_id = ?", (user_id,))
+    res = cursor.fetchone()
+    if not res or res[0] < 50: return await message.reply("Лотерея стоит 50 💠!")
+
+    cursor.execute("UPDATE users SET power_points = power_points - 50 WHERE user_id = ?", (user_id,))
+    r = random.random() * 100
+    mult = 50 if r < 0.2 else (10 if r < 2 else (3 if r < 15 else (1 if r < 45 else 0)))
+    win = 50 * mult
+    cursor.execute("UPDATE users SET power_points = power_points + ? WHERE user_id = ?", (win, user_id))
+    conn.commit()
+    await message.reply(f"🎰 Множитель x{mult}! Результат: {win} 💠")
+
 # --- 4. ПВП ---
+@dp.message_handler(lambda m: m.text and m.text.lower().startswith("пвп"), chat_type=[types.ChatType.GROUP, types.ChatType.SUPERGROUP])
+async def pvp_start(message: types.Message):
+    if not message.reply_to_message: return
+    user_id = message.from_user.id
+    target_id = message.reply_to_message.from_user.id
+    if user_id == target_id: return
+    
+    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("Принять дуэль (30 💠)", callback_data=f"pvp_acc_{user_id}_{target_id}"))
+    await message.answer(f"🔫 @{message.from_user.username} вызывает на дуэль @{message.reply_to_message.from_user.username}!", reply_markup=kb)
+
 @dp.callback_query_handler(lambda c: c.data.startswith('pvp_acc_'))
-async def pvp_callback(callback: types.CallbackQuery):
+async def pvp_battle(callback: types.CallbackQuery):
     _, _, ch_id, tg_id = callback.data.split('_')
-    if callback.from_user.id != int(tg_id): return
+    if callback.from_user.id != int(tg_id): 
+        return await callback.answer("Это не твой вызов!", show_alert=True)
     
-    players = [int(ch_id), int(tg_id)]
-    winner_id = random.choice(players)
-    loser_id = players[1] if winner_id == players[0] else players[0]
+    winner_id = random.choice([int(ch_id), int(tg_id)])
+    loser_id = int(tg_id) if winner_id == int(ch_id) else int(ch_id)
     
-    winner_user = await bot.get_chat_member(callback.message.chat.id, winner_id)
-    winner_name = f"@{winner_user.user.username}" if winner_user.user.username else winner_user.user.first_name
+    # Получаем имя победителя
+    winner_member = await bot.get_chat_member(callback.message.chat.id, winner_id)
+    winner_name = f"@{winner_member.user.username}" if winner_member.user.username else winner_member.user.first_name
 
     cursor.execute("UPDATE users SET power_points = power_points + 30 WHERE user_id = ?", (winner_id,))
     cursor.execute("UPDATE users SET power_points = power_points - 30 WHERE user_id = ?", (loser_id,))
     conn.commit()
-    
-    await callback.message.edit_text(f"🎯 Дуэль окончена!\n🏆 Победитель: **{winner_name}**\n💰 Награда: 30 💠")
+    await callback.message.edit_text(f"🎯 Дуэль окончена!\n🏆 Победитель: {winner_name}\n💰 Выигрыш: 30 💠")
 
-# --- 5. ОБЩИЙ ОБРАБОТЧИК (ПВП СТАРТ И СМС) ---
+# --- 5. ФИНАЛЬНЫЙ ОБРАБОТЧИК (СЧЕТЧИК СМС) ---
 @dp.message_handler(chat_type=[types.ChatType.GROUP, types.ChatType.SUPERGROUP])
-async def group_handler(message: types.Message):
+async def msg_counter(message: types.Message):
     user_id = message.from_user.id
-    text = message.text.lower() if message.text else ""
-    
+    # Регистрация и инкремент
     cursor.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, message.from_user.username))
     cursor.execute("UPDATE users SET msg_count = msg_count + 1 WHERE user_id = ?", (user_id,))
+    
+    # Передача (текстовая команда)
+    if message.text and message.text.lower().startswith("*передать") and message.reply_to_message:
+        try:
+            val = int(message.text.split()[1])
+            cursor.execute("SELECT power_points FROM users WHERE user_id = ?", (user_id,))
+            if cursor.fetchone()[0] >= val > 0:
+                cursor.execute("UPDATE users SET power_points = power_points - ? WHERE user_id = ?", (val, user_id))
+                cursor.execute("UPDATE users SET power_points = power_points + ? WHERE user_id = ?", (val, message.reply_to_message.from_user.id))
+                await message.answer(f"📦 Передано {val} 💠")
+        except: pass
     conn.commit()
-
-    if text.startswith("пвп") and message.reply_to_message:
-        target_id = message.reply_to_message.from_user.id
-        if target_id == user_id: return
-        kb = InlineKeyboardMarkup().add(InlineKeyboardButton("Принять бой (30 💠)", callback_data=f"pvp_acc_{user_id}_{target_id}"))
-        await message.answer(f"🔫 Вызов на дуэль принят? Жми кнопку!", reply_markup=kb)
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
