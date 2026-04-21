@@ -8,7 +8,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # --- КОНФИГУРАЦИЯ ---
 API_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_ID = 12345678  # СЮДА ВСТАВЬ СВОЙ ID
+ADMIN_ID = 7361338806  # СЮДА ВСТАВЬ СВОЙ ID
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
