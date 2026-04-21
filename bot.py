@@ -1,162 +1,208 @@
-import logging
-import sqlite3
-import os
-import random
+import logging, sqlite3, os, random, asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
-# Пытаемся импортировать драйвер для облачной базы
-try:
-    import psycopg2
-    from psycopg2.extras import DictCursor
-except ImportError:
-    psycopg2 = None
+from datetime import datetime
 
 # --- КОНФИГУРАЦИЯ ---
 API_TOKEN = os.getenv('BOT_TOKEN')
-DATABASE_URL = os.getenv('DATABASE_URL') # Ссылка из настроек Railway Postgres
+DATABASE_URL = os.getenv('DATABASE_URL')
 ADMIN_ID = 7361338806 
-ALLOWED_CHATS = [-1002408347623, -1003761187223] 
+MODERATORS = [7361338806] # Можешь добавить ID второго админа через запятую
+MAIN_CHAT_ID = -1002408347623 # Твой ID с префиксом -100 для супергрупп
+
+try:
+    import psycopg2
+except ImportError:
+    psycopg2 = None
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
 
-# --- УНИВЕРСАЛЬНЫЙ КОННЕКТОР ---
+# --- УНИВЕРСАЛЬНАЯ БАЗА ДАННЫХ ---
 class Database:
     def __init__(self):
         self.is_pg = DATABASE_URL is not None and psycopg2 is not None
         self.connect()
-
     def connect(self):
-        if self.is_pg:
-            self.conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-        else:
-            self.conn = sqlite3.connect("abode_gods.db", check_same_thread=False)
+        if self.is_pg: self.conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+        else: self.conn = sqlite3.connect("abode_gods.db", check_same_thread=False)
         self.cursor = self.conn.cursor()
-
     def execute(self, sql, params=()):
-        # Заменяем ? на %s если работаем с Postgres
-        if self.is_pg:
-            sql = sql.replace('?', '%s')
+        if self.is_pg: sql = sql.replace('?', '%s')
         try:
             self.cursor.execute(sql, params)
-            if "SELECT" in sql.upper():
-                return self.cursor.fetchone()
+            if "SELECT" in sql.upper(): return self.cursor.fetchone()
             self.conn.commit()
-        except Exception as e:
-            logging.error(f"DB Error: {e}")
-            self.connect() # Переподключаемся при ошибке
+        except: self.connect(); return self.execute(sql, params)
+    def fetchall(self, sql, params=()):
+        if self.is_pg: sql = sql.replace('?', '%s')
+        self.cursor.execute(sql, params)
+        return self.cursor.fetchall()
 
 db = Database()
+db.execute("""CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, username TEXT, 
+              power_points INTEGER DEFAULT 0, msg_count INTEGER DEFAULT 0, 
+              role TEXT DEFAULT 'player', custom_role TEXT DEFAULT '', warn_points INTEGER DEFAULT 0)""")
+db.execute("""CREATE TABLE IF NOT EXISTS inventory (user_id BIGINT, item_id TEXT, 
+              count INTEGER DEFAULT 0, PRIMARY KEY (user_id, item_id))""")
 
-# Создаем таблицу
-db.execute("""CREATE TABLE IF NOT EXISTS users 
-              (user_id BIGINT PRIMARY KEY, username TEXT, 
-               power_points INTEGER DEFAULT 0, msg_count INTEGER DEFAULT 0,
-               role TEXT DEFAULT 'player')""")
+def check_user(uid, name):
+    if db.is_pg: db.execute("INSERT INTO users (user_id, username) VALUES (?, ?) ON CONFLICT (user_id) DO NOTHING", (uid, name))
+    else: db.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (uid, name))
 
-def check_user(user_id, username):
-    if db.is_pg:
-        db.execute("INSERT INTO users (user_id, username, power_points) VALUES (?, ?, 0) ON CONFLICT (user_id) DO NOTHING", (user_id, username))
+async def is_allowed(m): return m.chat.id == MAIN_CHAT_ID or m.from_user.id == ADMIN_ID
+
+# --- ЦЕНЫ И НАЗВАНИЯ ---
+PRICES = {
+    "thief": 250, "altar": 500, "mirror": 300,
+    "echo": 150, "curse": 400, "clean": 1000,
+    "role": 700, "mute": 200, "seal": 200
+}
+ITEM_NAMES = {
+    "thief": "🗡 Инструмент вора", "altar": "🕯 Жертвенный алтарь", 
+    "mirror": "🔮 Осколок зеркала", "echo": "🌌 Эхо бездны", 
+    "curse": "🌫 Проклятие нищеты", "mute": "🔇 Рофл-мут", "seal": "🛡 Печать молчания"
+}
+
+# --- МАГАЗИН (ИНТЕРФЕЙС) ---
+def get_shop_kb(cat="main"):
+    kb = InlineKeyboardMarkup(row_width=2)
+    if cat == "main":
+        kb.add(InlineKeyboardButton("🗡 Снаряжение", callback_data="shop_gear"),
+               InlineKeyboardButton("🧪 Магия", callback_data="shop_magic"),
+               InlineKeyboardButton("👑 Власть", callback_data="shop_power"))
+    elif cat == "gear":
+        kb.add(InlineKeyboardButton("Вор (250)", callback_data="buy_thief"),
+               InlineKeyboardButton("Алтарь (500)", callback_data="buy_altar"),
+               InlineKeyboardButton("Зеркало (300)", callback_data="buy_mirror"),
+               InlineKeyboardButton("⬅️", callback_data="shop_main"))
+    elif cat == "magic":
+        kb.add(InlineKeyboardButton("Эхо (150)", callback_data="buy_echo"),
+               InlineKeyboardButton("Нищета (400)", callback_data="buy_curse"),
+               InlineKeyboardButton("Очищение (1000)", callback_data="buy_clean"),
+               InlineKeyboardButton("⬅️", callback_data="shop_main"))
+    elif cat == "power":
+        kb.add(InlineKeyboardButton("Роль (700)", callback_data="buy_role"),
+               InlineKeyboardButton("Мут (200)", callback_data="buy_mute"),
+               InlineKeyboardButton("Печать (200)", callback_data="buy_seal"),
+               InlineKeyboardButton("⬅️", callback_data="shop_main"))
+    return kb
+
+@dp.message_handler(lambda m: m.text and m.text.lower() == "магазин")
+async def cmd_shop(m: types.Message):
+    if not await is_allowed(m): return
+    await m.answer("🏛 **Сокровищница Обители**\nВыбери категорию:", reply_markup=get_shop_kb())
+
+@dp.callback_query_handler(lambda c: c.data.startswith(('shop_', 'buy_')))
+async def shop_logic(c: types.CallbackQuery):
+    action, val = c.data.split('_')
+    uid = c.from_user.id
+    check_user(uid, c.from_user.username)
+
+    if action == "shop":
+        await c.message.edit_text(f"🏛 Категория: {val}", reply_markup=get_shop_kb(val))
+    
+    elif action == "buy":
+        price = PRICES.get(val, 999999)
+        bal = db.execute("SELECT power_points FROM users WHERE user_id = ?", (uid,))[0]
+        if bal < price: return await c.answer("❌ Недостаточно сил!", show_alert=True)
+        
+        db.execute("UPDATE users SET power_points = power_points - ? WHERE user_id = ?", (price, uid))
+        if val == "clean":
+            db.execute("UPDATE users SET warn_points = 0 WHERE user_id = ?", (uid,))
+            await c.answer("🧪 Очищение проведено!", show_alert=True)
+        elif val == "role":
+            await c.answer("🎭 Используй команду: роль [текст]", show_alert=True)
+        else:
+            db.execute("INSERT INTO inventory (user_id, item_id, count) VALUES (?, ?, 1) ON CONFLICT(user_id, item_id) DO UPDATE SET count = inventory.count + 1", (uid, val))
+            await c.answer(f"✅ Куплено: {ITEM_NAMES.get(val)}", show_alert=True)
+
+# --- КОМАНДЫ ПРЕДМЕТОВ ---
+@dp.message_handler(lambda m: m.text and m.text.lower() == "кость судьбы")
+async def cmd_dice(m: types.Message):
+    if not await is_allowed(m): return
+    uid = m.from_user.id
+    check_user(uid, m.from_user.username)
+    bal = db.execute("SELECT power_points FROM users WHERE user_id = ?", (uid,))[0]
+    if bal < 100: return await m.reply("Минимум 100 💠")
+    
+    db.execute("UPDATE users SET power_points = power_points - 100 WHERE user_id = ?", (uid,))
+    side = random.randint(1, 6)
+    if side <= 2:
+        db.execute("UPDATE users SET power_points = power_points - 100 WHERE user_id = ?", (uid,))
+        await m.reply("🌑 Кость: 1-2. Потеря очков (-200 💠)")
+    elif side <= 4: await m.reply(f"🌫 Выпало {side}. Тишина.")
+    elif side == 5:
+        db.execute("UPDATE users SET power_points = power_points + 300 WHERE user_id = ?", (uid,))
+        await m.reply("✨ Удача: 5! (+300 💠)")
     else:
-        db.execute("INSERT OR IGNORE INTO users (user_id, username, power_points) VALUES (?, ?, 0)", (user_id, username))
+        db.execute("INSERT INTO inventory (user_id, item_id, count) VALUES (?, 'echo', 1) ON CONFLICT(user_id, item_id) DO UPDATE SET count = inventory.count + 1", (uid,))
+        await m.reply("🎁 ДЖЕКПОТ! Выпало 6. Предмет: Эхо бездны")
 
-def get_rank(msgs):
-    ranks = [(10000, "Лорд 👑"), (5000, "Золотая черепаха 🐢"), (3000, "Синий бафф 🟦"),
-             (2000, "Красный бафф 🟥"), (1500, "Динозаврик 🦖"), (1000, "Жук 🪲"),
-             (600, "Лесной медведь 🐻"), (300, "Краб 🦀")]
-    for limit, title in ranks:
-        if msgs >= limit: return title
-    return "Вазон 🪴"
-
-async def check_access(message: types.Message):
-    if message.chat.type == 'private':
-        return message.from_user.id == ADMIN_ID
-    return message.chat.id in ALLOWED_CHATS
-
-# --- ЛОТЕРЕЯ (деп) ---
-@dp.message_handler(lambda m: m.text and (m.text.lower().startswith(('лотерея', 'деп')) or m.text.lower().startswith('/lottery')))
-async def lottery_handler(message: types.Message):
-    if not await check_access(message): return
-    uid = message.from_user.id
-    check_user(uid, message.from_user.username)
+@dp.message_handler(lambda m: m.text and m.text.lower().startswith("использовать вор"))
+async def cmd_thief(m: types.Message):
+    if not await is_allowed(m) or not m.reply_to_message: return
+    uid, tid = m.from_user.id, m.reply_to_message.from_user.id
+    if uid == tid: return
     
-    args = message.text.split()
-    bet = int(args[1]) if len(args) > 1 and args[1].isdigit() else 50
-    if bet < 10: return
-    
-    res = db.execute("SELECT power_points FROM users WHERE user_id = ?", (uid,))
-    balance = res[0] if res else 0
+    cnt = db.execute("SELECT count FROM inventory WHERE user_id = ? AND item_id = 'thief'", (uid,))
+    if not cnt or cnt[0] < 1: return await m.reply("Нет Инструмента вора!")
 
-    if balance < bet: 
-        return await message.reply(f"Недостаточно сил! Твой баланс: {balance} 💠")
-
-    db.execute("UPDATE users SET power_points = power_points - ? WHERE user_id = ?", (bet, uid))
+    # Проверка зеркала
+    mir = db.execute("SELECT count FROM inventory WHERE user_id = ? AND item_id = 'mirror'", (tid,))
+    db.execute("UPDATE inventory SET count = count - 1 WHERE user_id = ? AND item_id = 'thief'", (uid,))
     
-    r = random.random() * 100
-    if r < 0.2: mult = 100
-    elif r < 0.7: mult = 50
-    elif r < 2.2: mult = 10
-    elif r < 10.2: mult = 5
-    elif r < 30.2: mult = 2
-    elif r < 65.2: mult = 1
-    else: mult = 0
-    
-    win = bet * mult
-    db.execute("UPDATE users SET power_points = power_points + ? WHERE user_id = ?", (win, uid))
-    
-    if mult >= 50: txt = f"🎰 ДЖЕКПОТ! x{mult}\n💰 Выигрыш: {win} 💠"
-    elif mult > 1: txt = f"🎰 Крупная удача! x{mult}\n💎 Забрал: {win} 💠"
-    elif mult == 1: txt = f"🎰 Возврат! x{mult}\n💠 Твои {win} 💠 при тебе."
-    else: txt = f"🎰 Мимо! x0\n💀 Ставка {bet} 💠 ушла в эфир."
-    await message.reply(txt)
+    if mir and mir[0] > 0:
+        db.execute("UPDATE inventory SET count = count - 1 WHERE user_id = ? AND item_id = 'mirror'", (tid,))
+        loss = random.randint(100, 300)
+        db.execute("UPDATE users SET power_points = power_points - ? WHERE user_id = ?", (loss, uid))
+        db.execute("UPDATE users SET power_points = power_points + ? WHERE user_id = ?", (loss, tid))
+        return await m.answer(f"🔮 Осколок Зеркала! Вор потерял {loss} 💠")
 
-# --- АДМИНКА ---
-@dp.message_handler(lambda m: m.text and any(m.text.lower().startswith(x) for x in ["гив", "награда", "кара", "зб", "божество+", "божество-"]))
-async def admin_handler(message: types.Message):
-    res = db.execute("SELECT role FROM users WHERE user_id = ?", (message.from_user.id,))
-    is_admin = (message.from_user.id == ADMIN_ID) or (res and res[0] == 'admin')
-    if not is_admin or not message.reply_to_message: return
-    
-    text = message.text.lower()
-    tid = message.reply_to_message.from_user.id
-    tname = f"@{message.reply_to_message.from_user.username}" if message.reply_to_message.from_user.username else "юзер"
-    
-    if message.from_user.id == ADMIN_ID:
-        if text.startswith("божество+"):
-            db.execute("UPDATE users SET role = 'admin' WHERE user_id = ?", (tid,))
-            return await message.answer(f"⚡️ {tname} возведен в ранг Божества!")
-        elif text.startswith("божество-"):
-            db.execute("UPDATE users SET role = 'player' WHERE user_id = ?", (tid,))
-            return await message.answer(f"☁️ {tname} лишен божественных сил.")
+    t_bal = db.execute("SELECT power_points FROM users WHERE user_id = ?", (tid,))[0]
+    amt = random.randint(1, 800)
+    if random.randint(1, 100) <= (70 if amt <= 250 else 15) and t_bal >= amt:
+        db.execute("UPDATE users SET power_points = power_points - ? WHERE user_id = ?", (amt, tid))
+        db.execute("UPDATE users SET power_points = power_points + ? WHERE user_id = ?", (amt, uid))
+        await m.answer(f"🗡 Украдено {amt} 💠!")
+    else:
+        db.execute("UPDATE users SET power_points = power_points - 250 WHERE user_id = ?", (uid,))
+        await m.answer("💀 Провал! Минус 250 💠")
 
-    try:
-        val = int(text.split()[1])
-        if text.startswith(("гив", "награда")):
-            db.execute("UPDATE users SET power_points = power_points + ? WHERE user_id = ?", (val, tid))
-            await message.answer(f"✨ Милость Властителя: {tname} +{val} 💠")
-        elif text.startswith(("кара", "зб")):
-            db.execute("UPDATE users SET power_points = power_points - ? WHERE user_id = ?", (val, tid))
-            await message.answer(f"🔥 Гнев Властителя: {tname} -{val} 💠")
-    except: pass
+# --- ЛС И РОЛИ ---
+@dp.message_handler(lambda m: m.chat.type == 'private' and m.text.lower().startswith('/echo'))
+async def l_echo(m: types.Message):
+    txt = m.text[6:].strip()
+    res = db.execute("SELECT count FROM inventory WHERE user_id = ? AND item_id = 'echo'", (m.from_user.id,))
+    if not res or res[0] < 1: return await m.reply("Нужно купить Эхо!")
+    db.execute("UPDATE inventory SET count = count - 1 WHERE user_id = ? AND item_id = 'echo'", (m.from_user.id,))
+    await bot.send_message(MAIN_CHAT_ID, f"🌌 **Эхо Бездны:**\n« {txt} »")
 
-# --- ПРОФИЛЬ И ПЕРЕДАЧА ---
-@dp.message_handler(lambda m: m.text and (m.text.lower().strip() in ['ми', 'профиль'] or m.text.lower().startswith(('ю*', '/you', '/me'))))
-async def profile_handler(message: types.Message):
-    if not await check_access(message): return
-    target = message.reply_to_message.from_user if message.reply_to_message else message.from_user
-    check_user(target.id, target.username)
-    res = db.execute("SELECT power_points, msg_count FROM users WHERE user_id = ?", (target.id,))
-    await message.answer(f"👤 {target.full_name}\n💠 Очки силы: {res[0]}\n📈 Ранг: {get_rank(res[1])}\n💬 Активность: {res[1]} сообщ.")
+@dp.message_handler(lambda m: m.text and m.text.lower().startswith("роль"))
+async def cmd_role(m: types.Message):
+    txt = m.text[5:].strip()
+    if not txt or len(txt) > 20: return
+    m_text = " ".join([f"ID:{aid}" for aid in MODERATORS])
+    await m.answer(f"⏳ Запрос отправлен богам.\n🎭 Роль: {txt}\n{m_text}")
 
-@dp.message_handler(chat_type=[types.ChatType.GROUP, types.ChatType.SUPERGROUP])
-async def counter(message: types.Message):
-    if not await check_access(message): return
-    check_user(message.from_user.id, message.from_user.username)
-    db.execute("UPDATE users SET msg_count = msg_count + 1 WHERE user_id = ?", (message.from_user.id,))
+# --- ПРОФИЛЬ И СЧЕТЧИК ---
+@dp.message_handler(lambda m: m.text and m.text.lower().strip() in ['ми', 'профиль'])
+async def cmd_me(m: types.Message):
+    t = m.reply_to_message.from_user if m.reply_to_message else m.from_user
+    check_user(t.id, t.username)
+    u = db.execute("SELECT power_points, msg_count, custom_role FROM users WHERE user_id = ?", (t.id,))
+    inv = db.fetchall("SELECT item_id, count FROM inventory WHERE user_id = ? AND count > 0", (t.id,))
+    inv_s = "\n🎒: " + ", ".join([f"{i[0]} x{i[1]}" for i in inv]) if inv else ""
+    await m.answer(f"👤 {t.full_name}\n💠 Сила: {u[0]}\n💬 Сообщ: {u[1]}{inv_s}")
+
+@dp.message_handler(content_types=['text'])
+async def count_msgs(m: types.Message):
+    if m.chat.id != MAIN_CHAT_ID: return
+    check_user(m.from_user.id, m.from_user.username)
+    db.execute("UPDATE users SET msg_count = msg_count + 1 WHERE user_id = ?", (m.from_user.id,))
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
-  
+    
