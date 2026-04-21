@@ -8,7 +8,7 @@ from aiogram.types import ChatMemberStatus
 
 API_TOKEN = os.getenv("API_TOKEN")
 
-bot = Bot(token=8771183679:AAG6JR-5fGNzMudXR5x9UBZjvPkF5dJOHTU)
+bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
 
 conn = sqlite3.connect("scores.db")
