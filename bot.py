@@ -1,3 +1,4 @@
+
 import logging
 import sqlite3
 import os
@@ -9,7 +10,6 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 # --- КОНФИГУРАЦИЯ ---
 API_TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = 7361338806 
-# Основной чат (2408347623) и Тестовый (3761187223)
 ALLOWED_CHATS = [-1002408347623, -1003761187223] 
 
 logging.basicConfig(level=logging.INFO)
@@ -17,8 +17,7 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
 
 # --- БАЗА ДАННЫХ ---
-# Напоминание: На Railway база сбросится при деплое, если не подключить Volume или Postgres
-conn = sqlite3.connect("abode_gods_v13.db", check_same_thread=False)
+conn = sqlite3.connect("abode_gods_v15.db", check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("""CREATE TABLE IF NOT EXISTS users 
                   (user_id INTEGER PRIMARY KEY, username TEXT, 
@@ -74,10 +73,10 @@ async def transfer_points(message: types.Message):
         conn.commit()
 
         await message.answer(f"📦 {message.from_user.first_name} передал {message.reply_to_message.from_user.first_name} {amount} 💠")
-    except (ValueError, IndexError):
-        await message.reply("Используй формат: `*передать 100`")
+    except:
+        await message.reply("Пример: `*передать 100`")
 
-# --- 2. ЛОТЕРЕЯ (Джекпот x100) ---
+# --- 2. ЛОТЕРЕЯ (Математика v10.0 + Тексты v14.0 + x100) ---
 @dp.message_handler(lambda m: m.text and (m.text.lower().startswith('лотерея') or m.text.lower().startswith('/lottery')))
 async def lottery_handler(message: types.Message):
     if not await check_access(message): return
@@ -90,34 +89,37 @@ async def lottery_handler(message: types.Message):
 
     cursor.execute("SELECT power_points FROM users WHERE user_id = ?", (user_id,))
     balance = cursor.fetchone()[0]
-    if balance < bet: return await message.reply(f"Недостаточно сил! Баланс: {balance} 💠")
+    if balance < bet: return await message.reply(f"Недостаточно сил! Твой баланс: {balance} 💠")
 
     cursor.execute("UPDATE users SET power_points = power_points - ? WHERE user_id = ?", (bet, user_id))
     
     r = random.random() * 100
-    # Настройка шансов: x100(0.2%), x10(2.3%), x5(6%), x2(12%), x1(45%), x0(34.5%)
-    if r < 0.2: mult = 100
-    elif r < 2.5: mult = 10
-    elif r < 8.5: mult = 5
-    elif r < 20.5: mult = 2
-    elif r < 65.5: mult = 1
-    else: mult = 0
+    
+    # Шансы на основе версии 10.0 + x100:
+    if r < 0.2: mult = 100    # Легендарный шанс
+    elif r < 0.7: mult = 50   # 0.5% (как было в v10)
+    elif r < 2.2: mult = 10   # 1.5%
+    elif r < 10.2: mult = 5   # 8.0%
+    elif r < 30.2: mult = 2   # 20.0%
+    elif r < 65.2: mult = 1   # 35.0% (Тот самый возврат из v10)
+    else: mult = 0            # 34.8% Проигрыш
     
     win = bet * mult
     cursor.execute("UPDATE users SET power_points = power_points + ? WHERE user_id = ?", (win, user_id))
     conn.commit()
     
-    if mult == 100:
-        res = f"🔥 ЛЕГЕНДАРНЫЙ ДЖЕКПОТ! 🔥\n🎰 Множитель x100!\n💰 Выигрыш: {win} 💠"
+    if mult >= 50:
+        res_text = f"🎰 ДЖЕКПОТ! x{mult}\n💰 Выигрыш: {win} 💠"
     elif mult > 1:
-        res = f"🎰 Удача! x{mult}\n💎 Забрал: {win} 💠"
+        res_text = f"🎰 Крупная удача! x{mult}\n💎 Забрал: {win} 💠"
     elif mult == 1:
-        res = f"🎰 Возврат! x1\n💠 {win} 💠 сохранены."
+        res_text = f"🎰 Возврат! x{mult}\n💠 Твои {win} 💠 при тебе."
     else:
-        res = f"🎰 Проигрыш x0.\n💀 Ставка {bet} 💠 сгорела."
-    await message.reply(res)
+        res_text = f"🎰 Мимо! x0\n💀 Ставка {bet} 💠 ушла в эфир."
+        
+    await message.reply(res_text)
 
-# --- 3. ПРОФИЛЬ (Ми, ю*, /me, /you) ---
+# --- 3. ПРОФИЛЬ, ПВП, АДМИНКА ---
 @dp.message_handler(lambda m: m.text and (m.text.lower().strip() in ['ми', 'профиль'] or m.text.lower().startswith(('ю*', '/you', '/me'))))
 async def profile_handler(message: types.Message):
     if not await check_access(message): return
@@ -127,7 +129,6 @@ async def profile_handler(message: types.Message):
     res = cursor.fetchone()
     await message.answer(f"👤 {target.full_name}\n💠 Очки силы: {res[0]}\n📈 Ранг: {get_rank(res[1])}\n💬 Активность: {res[1]} сообщ.")
 
-# --- 4. ПВП ---
 @dp.message_handler(lambda m: m.text and m.text.lower().startswith("пвп"))
 async def pvp_start(message: types.Message):
     if not await check_access(message): return
@@ -156,7 +157,6 @@ async def pvp_callback(callback: types.CallbackQuery):
     conn.commit()
     await callback.message.edit_text(f"🎯 Победитель: **{winner.user.first_name}**\n💰 Куш: {price} 💠")
 
-# --- 5. АДМИНКА ---
 @dp.message_handler(lambda m: any(x in m.text.lower() for x in ["гив", "награда", "кара", "зб"]))
 async def admin_handler(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
@@ -173,7 +173,7 @@ async def admin_handler(message: types.Message):
         await message.answer(f"🔥 Гнев Властителя: {name} -{val} 💠")
     conn.commit()
 
-# --- 6. СЧЕТЧИК (В самом низу) ---
+# --- 4. СЧЕТЧИК ---
 @dp.message_handler(chat_type=[types.ChatType.GROUP, types.ChatType.SUPERGROUP])
 async def counter(message: types.Message):
     if not await check_access(message): return
