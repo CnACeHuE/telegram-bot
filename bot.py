@@ -16,11 +16,12 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
 
 # --- БАЗА ДАННЫХ ---
-conn = sqlite3.connect("abode_gods_v17.db", check_same_thread=False)
+conn = sqlite3.connect("abode_gods_v18.db", check_same_thread=False)
 cursor = conn.cursor()
+# Изменил DEFAULT 100 на DEFAULT 0
 cursor.execute("""CREATE TABLE IF NOT EXISTS users 
                   (user_id INTEGER PRIMARY KEY, username TEXT, 
-                   power_points INTEGER DEFAULT 100, msg_count INTEGER DEFAULT 0,
+                   power_points INTEGER DEFAULT 0, msg_count INTEGER DEFAULT 0,
                    role TEXT DEFAULT 'player')""")
 conn.commit()
 
@@ -33,7 +34,8 @@ def get_rank(msgs):
     return "Вазон 🪴"
 
 def check_user(user_id, username):
-    cursor.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, username))
+    # При первом заходе теперь вставляется 0 очков по умолчанию
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, username, power_points) VALUES (?, ?, 0)", (user_id, username))
     conn.commit()
 
 async def check_access(message: types.Message):
@@ -59,8 +61,9 @@ async def transfer_points(message: types.Message):
         check_user(target_id, message.reply_to_message.from_user.username)
 
         cursor.execute("SELECT power_points FROM users WHERE user_id = ?", (user_id,))
-        if cursor.fetchone()[0] < amount:
-            return await message.reply("Недостаточно 💠!")
+        balance = cursor.fetchone()[0]
+        if balance < amount:
+            return await message.reply(f"Недостаточно 💠! Твой баланс: {balance}")
 
         cursor.execute("UPDATE users SET power_points = power_points - ? WHERE user_id = ?", (amount, user_id))
         cursor.execute("UPDATE users SET power_points = power_points + ? WHERE user_id = ?", (amount, target_id))
@@ -82,11 +85,12 @@ async def lottery_handler(message: types.Message):
     cursor.execute("SELECT power_points FROM users WHERE user_id = ?", (user_id,))
     balance = cursor.fetchone()[0]
     if balance < bet: 
-        return await message.reply(f"Недостаточно сил! Баланс: {balance} 💠")
+        return await message.reply(f"Недостаточно сил! Твой баланс: {balance} 💠. Заработай их в чате!")
 
     cursor.execute("UPDATE users SET power_points = power_points - ? WHERE user_id = ?", (bet, user_id))
     r = random.random() * 100
     
+    # Шансы: x100(0.2%), x50(0.5%), x10(1.5%), x5(8%), x2(20%), x1(35%), x0(34.8%)
     if r < 0.2: mult = 100
     elif r < 0.7: mult = 50
     elif r < 2.2: mult = 10
@@ -164,7 +168,7 @@ async def pvp_start(message: types.Message):
     if u1 == u2: return
     check_user(u1, message.from_user.username); check_user(u2, message.reply_to_message.from_user.username)
     cursor.execute("SELECT power_points FROM users WHERE user_id IN (?, ?)", (u1, u2))
-    if any(b[0] < price for b in cursor.fetchall()): return await message.reply(f"Нужно {price} 💠!")
+    if any(b[0] < price for b in cursor.fetchall()): return await message.reply(f"Нужно {price} 💠 у обоих!")
     kb = InlineKeyboardMarkup().add(InlineKeyboardButton(f"Принять ({price} 💠)", callback_data=f"pvp_{u1}_{u2}_{price}"))
     await message.answer(f"🔫 Вызов на бой! Ставка: {price} 💠", reply_markup=kb)
 
