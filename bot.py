@@ -56,32 +56,47 @@ def get_rank(msgs):
     if msgs >= 300: return "Краб 🦀"
     return "Вазон"
 
-# --- 1. АДМИН-КОМАНДЫ ---
+# --- 1. АДМИН-ЛОГИКА (КАРА, ГИВ, РОЛИ) ---
 async def is_admin(user_id):
     if user_id == OWNER_ID: return True
     res = db.execute("SELECT role FROM users WHERE user_id = ?", (user_id,))
     return res and res[0] == 'admin'
 
-@dp.message_handler(lambda m: m.text and m.text.lower().startswith(('гив', 'божество+', 'божество-')))
+@dp.message_handler(lambda m: m.text and m.text.lower().startswith(('гив', 'божество+', 'божество-', 'кара')))
 async def admin_tools(m: types.Message):
     if not await is_admin(m.from_user.id): return
-    if not m.reply_to_message: return await m.reply("<b>⚠️ Ответь на сообщение цели!</b>")
-    args = m.text.lower().split(); cmd = args[0]; target = m.reply_to_message.from_user
+    
+    args = m.text.lower().split()
+    cmd = args[0]
+    
+    # "Божество-" на себе работает, если ты не владелец.
+    target = m.reply_to_message.from_user if m.reply_to_message else m.from_user
+    
     if cmd == 'божество+':
+        if not m.reply_to_message: return await m.reply("<b>⚠️ Ответь на сообщение цели!</b>")
         db.execute("UPDATE users SET role = 'admin' WHERE user_id = ?", (target.id,))
         await m.answer(f"⚡️ {get_mention(target.id, target.first_name)} возведен в ранг <b>Божества</b>!")
+    
     elif cmd == 'божество-':
-        if target.id == OWNER_ID: return
+        if target.id == OWNER_ID: return await m.answer("🪐 Владелец Обители не может лишиться своей искры.")
         db.execute("UPDATE users SET role = 'player' WHERE user_id = ?", (target.id,))
-        await m.answer(f"☁️ {get_mention(target.id, target.first_name)} низвергнут до игрока.")
+        await m.answer(f"☁️ {get_mention(target.id, target.first_name)} теперь в ранге игрока.")
+    
+    elif cmd == 'кара':
+        if not m.reply_to_message: return await m.reply("<b>⚠️ Ответь на сообщение грешника!</b>")
+        if target.id == OWNER_ID: return await m.answer("🛡 Кара бессильна против Создателя.")
+        db.execute("UPDATE users SET power_points = 0 WHERE user_id = ?", (target.id,))
+        await m.answer(f"⚡️ <b>НЕБЕСНАЯ КАРА!</b> Мощь {get_mention(target.id, target.first_name)} обращена в прах.")
+        
     elif cmd == 'гив':
+        if not m.reply_to_message: return await m.reply("<b>⚠️ Ответь на сообщение цели!</b>")
         try:
             amt = int(args[1])
             db.execute("UPDATE users SET power_points = power_points + ? WHERE user_id = ?", (amt, target.id))
             await m.answer(f"🔱 {get_mention(target.id, target.first_name)} получил <code>{amt}</code> 💠 мощи.")
         except: pass
 
-# --- 2. ЛОТЕРЕЯ (ЦВЕТОВАЯ ЛОГИКА) ---
+# --- 2. ЛОТЕРЕЯ (БЕЗ ИЗМЕНЕНИЙ ОФОРМЛЕНИЯ) ---
 @dp.message_handler(lambda m: m.text and m.text.lower().startswith(('лотерея', 'деп')))
 async def cmd_loto(m: types.Message):
     check_user(m.from_user)
@@ -120,7 +135,7 @@ async def cmd_loto(m: types.Message):
         await m.answer(res)
     except: pass
 
-# --- 3. ПРОФИЛЬ И ТОПЫ ---
+# --- 3. ТОПЫ И ПРОФИЛЬ (ТОЧНЫЕ ТРИГГЕРЫ) ---
 @dp.message_handler(lambda m: m.text and m.text.lower().strip() in ['ми', 'профиль', 'ю*'])
 async def cmd_profile(m: types.Message):
     t = m.reply_to_message.from_user if m.reply_to_message else m.from_user
@@ -135,14 +150,14 @@ async def cmd_profile(m: types.Message):
           f"📜 <b>Опыт:</b> <code>{u[1]}</code> сообщений\n━━━━━━━━━━━━━━")
     await m.answer(ui)
 
-@dp.message_handler(lambda m: m.text and (m.text.lower().startswith('/top') or "сильнейшие" in m.text.lower()))
+@dp.message_handler(lambda m: m.text and m.text.lower().startswith(('сильнейшие', '/top')))
 async def top_power(m: types.Message):
     users = db.fetchall("SELECT user_id, username, power_points FROM users ORDER BY power_points DESC LIMIT 10")
     res = "🏆 <b>СИЛЬНЕЙШИЕ БОГИ:</b>\n\n"
     for i, u in enumerate(users, 1): res += f"{i}. {get_mention(u[0], u[1])} — <code>{u[2]}</code> 💠\n"
     await m.answer(res)
 
-@dp.message_handler(lambda m: m.text and "активчики" in m.text.lower())
+@dp.message_handler(lambda m: m.text and m.text.lower().startswith('активчики'))
 async def top_active(m: types.Message):
     users = db.fetchall("SELECT user_id, username, msg_count FROM users ORDER BY msg_count DESC LIMIT 10")
     res = "🔥 <b>АКТИВЧИКИ ОБИТЕЛИ:</b>\n\n"
