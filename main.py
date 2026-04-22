@@ -30,7 +30,7 @@ async def is_admin(user_id):
     res = db.execute("SELECT admin_rank FROM users WHERE user_id = %s", (user_id,))
     return res and res[0] >= 3
 
-# --- ХЕЛП ---
+# --- КОМАНДА ПОМОЩИ ---
 HELP_TEXT = """📖 <b>БИБЛИОТЕКА</b>
 ━━━━━━━━━━━━━━
 🎮 <b>Игры:</b>
@@ -45,7 +45,8 @@ HELP_TEXT = """📖 <b>БИБЛИОТЕКА</b>
 — эволюция / .пд / .сбор
 ━━━━━━━━━━━━━━"""
 
-@dp.message_handler(commands=['start', 'help'])
+@dp.message_handler(commands=['help'])
+@dp.message_handler(lambda m: m.text and m.text.lower() == 'хелп')
 async def send_help(m: types.Message):
     await m.answer(HELP_TEXT)
 
@@ -53,24 +54,26 @@ async def send_help(m: types.Message):
 @dp.message_handler(lambda m: m.text and m.text.lower() in ['ми', 'профиль', 'ю*'])
 async def profile(m: types.Message):
     target = m.reply_to_message.from_user if m.reply_to_message else m.from_user
+    # Запрашиваем данные в строгом порядке под индексы
     u = db.execute("SELECT power_points, msg_count, admin_rank, clan_role FROM users WHERE user_id = %s", (target.id,))
     
     if not u:
-        db.execute("INSERT INTO users (user_id, username) VALUES (%s, %s)", (target.id, target.first_name))
-        u = (100, 0, 0, None)
+        db.execute("INSERT INTO users (user_id, username, power_points, msg_count) VALUES (%s, %s, 100, 0)", (target.id, target.first_name, 100, 0))
+        u = (100, 0, 0, "Нет")
 
-    rank = get_rank(u[1])
-    adm_status = "БОЖЕСТВО 🔱" if u[2] >= 3 or target.id == config.OWNER_ID else "Житель"
+    power, experience, admin_lvl, clan_status = u[0], u[1], u[2], (u[3] if u[3] else "Нет")
+    rank = get_rank(experience)
+    adm_status = "БОЖЕСТВО 🔱" if admin_lvl >= 3 or target.id == config.OWNER_ID else "Житель"
     
     ui = (f"✨ <b>СВИТОК ОБИТЕЛИ</b>\n━━━━━━━━━━━━━━\n"
           f"👤 <b>Имя:</b> {get_mention(target.id, target.first_name)}\n"
           f"🎖 <b>Эв. статус:</b> <i>{rank}</i>\n"
           f"🔱 <b>Ранг:</b> {adm_status}\n"
-          f"⚡️ <b>Мощь:</b> <code>{u[0]}</code> 💠\n"
-          f"📜 <b>Опыт:</b> <code>{u[1]}</code>\n━━━━━━━━━━━━━━")
+          f"⚡️ <b>Мощь:</b> <code>{power}</code> 💠\n"
+          f"📜 <b>Опыт:</b> <code>{experience}</code>\n━━━━━━━━━━━━━━")
     await m.answer(ui)
 
-# --- ТОПЫ ---
+# --- ТОПЫ (СИЛЬНЕЙШИЕ / АКТИВЧИКИ) ---
 @dp.message_handler(lambda m: m.text and m.text.lower() in ['сильнейшие', 'активчики'])
 async def tops(m: types.Message):
     is_power = "сильнейшие" in m.text.lower()
@@ -83,7 +86,7 @@ async def tops(m: types.Message):
         res += f"{i}. {get_mention(row[0], row[1])} — <code>{row[2]}</code> {icon}\n"
     await m.answer(res)
 
-# --- АДМИНКА (КАРА / ГИВ) ---
+# --- АДМИН КОМАНДЫ (КАРА / ГИВ) ---
 @dp.message_handler(lambda m: m.text and m.text.lower().startswith(('гив', 'кара')))
 async def admin_tools(m: types.Message):
     if not await is_admin(m.from_user.id): return
@@ -94,7 +97,7 @@ async def admin_tools(m: types.Message):
     
     if args[0].lower() == 'кара':
         amt = int(args[1]) if len(args) > 1 and args[1].isdigit() else 0
-        if target.id == config.OWNER_ID: return await m.answer("🛡 Кара бессильна.")
+        if target.id == config.OWNER_ID: return await m.answer("🛡 Кара бессильна против Создателя.")
         
         if amt > 0:
             db.execute("UPDATE users SET power_points = GREATEST(0, power_points - %s) WHERE user_id = %s", (amt, target.id))
@@ -110,7 +113,7 @@ async def admin_tools(m: types.Message):
             await m.answer(f"🔱 {get_mention(target.id, target.first_name)} получил <code>{amt}</code> 💠")
         except: pass
 
-# --- ЛОТЕРЕЯ (ДЕП) ---
+# --- ИГРЫ (ДЕП И ПВП) ---
 @dp.message_handler(lambda m: m.text and m.text.lower().split()[0] in ['лотерея', 'деп'])
 async def loto(m: types.Message):
     try:
@@ -124,41 +127,66 @@ async def loto(m: types.Message):
         mult = random.choices(list(w.keys()), weights=list(w.values()))[0]
         win_amt = bet * mult
         new_bal = u_bal - bet + win_amt
-        
         db.execute("UPDATE users SET power_points = %s WHERE user_id = %s", (new_bal, m.from_user.id))
         
         icon = {100: "💰", 10: "👑", 5: "🟢", 3: "🟢", 2: "🟢", 1: "🟡", 0: "🔴"}.get(mult)
-        await m.answer(f"{icon} <b>{'ВЫИГРЫШ' if mult > 1 else 'ПРОИГРЫШ'} x{mult}</b>\n━━━━━━━━━━━━━━\n💸 Ставка: <code>{bet}</code>\n💎 Получено: <code>{win_amt}</code>\n💰 Баланс: <code>{new_bal}</code> 💠")
+        status = "ДЖЕКПОТ" if mult == 100 else "ВЫИГРЫШ" if mult > 1 else "ПРОИГРЫШ"
+        await m.answer(f"{icon} <b>{status} x{mult}</b>\n━━━━━━━━━━━━━━\n💸 Ставка: <code>{bet}</code>\n💎 Получено: <code>{win_amt}</code>\n💰 Баланс: <code>{new_bal}</code> 💠")
     except: pass
 
-# --- ПЕРЕДАЧА ---
 @dp.message_handler(lambda m: m.text and m.text.lower().startswith('*передать'))
 async def transfer(m: types.Message):
     if not m.reply_to_message: return
     try:
         amt = int(m.text.split()[1])
         uid, tid = m.from_user.id, m.reply_to_message.from_user.id
+        if amt <= 0 or uid == tid: return
         u_bal = db.execute("SELECT power_points FROM users WHERE user_id = %s", (uid,))[0]
-        if u_bal >= amt > 0:
+        if u_bal >= amt:
             db.execute("UPDATE users SET power_points = power_points - %s WHERE user_id = %s", (amt, uid))
             db.execute("UPDATE users SET power_points = power_points + %s WHERE user_id = %s", (amt, tid))
             await m.answer(f"🤝 {get_mention(uid, m.from_user.first_name)} ➡ <code>{amt}</code> 💠 ➡ {get_mention(tid, m.reply_to_message.from_user.first_name)}")
     except: pass
 
-# --- ОБЩИЙ СЧЕТЧИК И КЛАНЫ ---
+# --- ПВП ЛОГИКА ---
+@dp.message_handler(lambda m: m.text and m.text.lower().startswith('пвп'))
+async def pvp_start(m: types.Message):
+    if not m.reply_to_message: return
+    try:
+        bet = int(m.text.split()[1]) if len(m.text.split()) > 1 else 50
+        p1 = db.execute("SELECT power_points FROM users WHERE user_id = %s", (m.from_user.id,))[0]
+        p2 = db.execute("SELECT power_points FROM users WHERE user_id = %s", (m.reply_to_message.from_user.id,))[0]
+        if p1 < bet or p2 < bet: return await m.reply("❌ Недостаточно мощи!")
+        kb = InlineKeyboardMarkup().add(InlineKeyboardButton("⚔️ ПРИНЯТЬ БОЙ", callback_data=f"pvp_{m.from_user.id}_{bet}"))
+        await m.answer(f"⚔️ {get_mention(m.from_user.id, m.from_user.first_name)} бросает вызов!\nСтавка: <b>{bet}</b> 💠", reply_markup=kb)
+    except: pass
+
+@dp.callback_query_handler(lambda c: c.data.startswith('pvp_'))
+async def pvp_call(c: types.CallbackQuery):
+    _, ch_id, bet = c.data.split('_'); ch_id, bet = int(ch_id), int(bet)
+    if c.from_user.id == ch_id: return
+    b1 = db.execute("SELECT power_points FROM users WHERE user_id = %s", (ch_id,))[0]
+    b2 = db.execute("SELECT power_points FROM users WHERE user_id = %s", (c.from_user.id,))[0]
+    if b1 < bet or b2 < bet: return await c.answer("❌ Бой отменен: нехватка💠", show_alert=True)
+    
+    win = random.choice([ch_id, c.from_user.id]); lose = c.from_user.id if win == ch_id else ch_id
+    db.execute("UPDATE users SET power_points = power_points + %s WHERE user_id = %s", (bet, win))
+    db.execute("UPDATE users SET power_points = power_points - %s WHERE user_id = %s", (bet, lose))
+    w_name = (await bot.get_chat_member(c.message.chat.id, win)).user.first_name
+    await c.message.edit_text(f"🏆 В битве победил <b>{w_name}</b>!\n💰 Выигрыш: <code>{bet}</code> 💠")
+
+# --- ГЛОБАЛЬНЫЙ ОБРАБОТЧИК ---
 @dp.message_handler(content_types=['text'])
 async def global_handler(m: types.Message):
-    # Учет сообщения
     name = m.from_user.first_name.replace("<", "").replace(">", "")
     db.execute(
-        "INSERT INTO users (user_id, username, msg_count) VALUES (%s, %s, 1) "
+        "INSERT INTO users (user_id, username, power_points, msg_count) VALUES (%s, %s, 100, 1) "
         "ON CONFLICT (user_id) DO UPDATE SET msg_count = users.msg_count + 1, username = %s",
         (m.from_user.id, name, name)
     )
-    # Если команда клана
     if m.text and m.text.lower().split()[0] in ['клан', 'пантеон', 'создать']:
         await clan_router(m)
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
-        
+    
