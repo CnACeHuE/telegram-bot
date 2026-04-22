@@ -19,7 +19,6 @@ cmd_perms = {
     "сильнейшие": 0, "активчики": 0, "*передать": 0, ".пд": 100, "help": 0, ".сбор": 100
 }
 
-# ПОРОГИ ЭВОЛЮЦИИ
 EVO_MAP = {
     300: "Краб 🦀", 600: "Лесной медведь 🐻", 1000: "Жук 🪲", 
     1500: "Динозаврик 🦖", 2000: "Красный бафф 🟥", 3000: "Синий бафф 🟦",
@@ -88,19 +87,18 @@ async def get_user_rank(user_id):
     res = db.execute("SELECT admin_rank FROM users WHERE user_id = ?", (user_id,))
     return res[0] if res else 0
 
-# --- 1. АДМИН-ВЕТВЬ (Кара, Гив, .пд) ---
-@dp.message_handler(lambda m: m.text and any(m.text.lower().startswith(x) for x in ['.пд', 'кара', 'гив', 'эволюция']))
-async def admin_branch(m: types.Message):
-    txt = m.text.lower()
-    cmd = txt.split()[0]
+# --- 1. АДМИНИСТРИРОВАНИЕ ---
+@dp.message_handler(lambda m: m.text and m.text.lower().split()[0] in ['.пд', 'кара', 'гив', 'эволюция'])
+async def admin_commands(m: types.Message):
+    txt = m.text.lower().split()
+    cmd = txt[0]
     u_rank = await get_user_rank(m.from_user.id)
     
     if u_rank < cmd_perms.get(cmd, 3): return
 
-    if cmd == '.пд' and len(txt.split()) == 3:
-        target_cmd, val = txt.split()[1], int(txt.split()[2])
-        cmd_perms[target_cmd] = val
-        return await m.answer(f"⚙️ Система прав обновлена для <code>{target_cmd}</code>")
+    if cmd == '.пд' and len(txt) == 3:
+        cmd_perms[txt[1]] = int(txt[2])
+        return await m.answer(f"⚙️ Система: Команда <code>{txt[1]}</code> теперь для ранга {txt[2]}")
 
     if not m.reply_to_message: return
     target = m.reply_to_message.from_user
@@ -108,40 +106,39 @@ async def admin_branch(m: types.Message):
 
     if cmd == 'кара':
         if target.id == OWNER_ID and m.from_user.id != OWNER_ID: return
-        try:
-            amt = int(txt.split()[1]) if len(txt.split()) > 1 else None
-            if amt:
-                db.execute("UPDATE users SET power_points = MAX(0, power_points - ?) WHERE user_id = ?", (amt, target.id))
-                await m.answer(f"🔥 {get_mention(target.id, target.first_name)} поражен карой на <code>{amt}</code> 💠")
-            else:
-                db.execute("UPDATE users SET power_points = 0 WHERE user_id = ?", (target.id,))
-                await m.answer(f"⚡️ <b>НЕБЕСНАЯ КАРА!</b>\nМощь {target.first_name} уничтожена.")
-        except: pass
+        amt = int(txt[1]) if len(txt) > 1 and txt[1].isdigit() else None
+        if amt:
+            db.execute("UPDATE users SET power_points = MAX(0, power_points - ?) WHERE user_id = ?", (amt, target.id))
+            await m.answer(f"🔥 {get_mention(target.id, target.first_name)} поражен карой на <code>{amt}</code> 💠")
+        else:
+            db.execute("UPDATE users SET power_points = 0 WHERE user_id = ?", (target.id,))
+            await m.answer(f"⚡️ <b>НЕБЕСНАЯ КАРА!</b>\nМощь {target.first_name} обнулена.")
 
     elif cmd == 'гив':
-        try:
-            amt = int(txt.split()[1])
+        if len(txt) > 1 and txt[1].isdigit():
+            amt = int(txt[1])
             db.execute("UPDATE users SET power_points = power_points + ? WHERE user_id = ?", (amt, target.id))
             await m.answer(f"🔱 {get_mention(target.id, target.first_name)} даровано <code>{amt}</code> 💠")
-        except: pass
 
     elif cmd == 'эволюция':
-        try:
-            lvl = int(txt.split()[1])
+        if len(txt) > 1 and txt[1].isdigit():
+            lvl = int(txt[1])
             db.execute("UPDATE users SET admin_rank = ? WHERE user_id = ?", (lvl, target.id))
             await m.answer(f"🌟 Ранг {target.first_name} изменен на: <b>{get_admin_rank_name(lvl)}</b>")
-        except: pass
 
 # --- 2. ИГРЫ И ПВП ---
-@dp.message_handler(lambda m: m.text and any(m.text.lower().startswith(x) for x in ['пвп', 'лотерея', 'деп']))
-async def games(m: types.Message):
-    txt = m.text.lower()
+@dp.message_handler(lambda m: m.text and m.text.lower().split()[0] in ['пвп', 'лотерея', 'деп'])
+async def game_commands(m: types.Message):
+    txt = m.text.lower().split()
+    cmd = txt[0]
     check_user(m.from_user)
     
-    if txt.startswith('пвп'):
+    if cmd == 'пвп':
         if not m.reply_to_message: return
-        bet = int(txt.split()[1]) if len(txt.split()) > 1 else 50
+        bet = int(txt[1]) if len(txt) > 1 and txt[1].isdigit() else 50
         uid, tid = m.from_user.id, m.reply_to_message.from_user.id
+        if uid == tid: return
+        
         b1 = (db.execute("SELECT power_points FROM users WHERE user_id = ?", (uid,)) or (0,))[0]
         b2 = (db.execute("SELECT power_points FROM users WHERE user_id = ?", (tid,)) or (0,))[0]
         
@@ -151,22 +148,24 @@ async def games(m: types.Message):
         kb = InlineKeyboardMarkup().add(InlineKeyboardButton("⚔️ ПРИНЯТЬ", callback_data=f"pvp_{uid}_{bet}"))
         await m.answer(f"⚔️ {m.from_user.first_name} вызывает {m.reply_to_message.from_user.first_name} на <b>{bet}</b> 💠", reply_markup=kb)
 
-    elif txt.startswith(('лотерея', 'деп')):
-        try:
-            bet = int(txt.split()[1]) if len(txt.split()) > 1 else 50
-            u = db.execute("SELECT power_points, loss_streak, spins_since_win FROM users WHERE user_id = ?", (m.from_user.id,))
-            if u[0] < bet or bet < 1: return await m.reply("❌ Недостаточно мощи!")
-            w = {0: 40, 1: 30, 2: 18, 3: 8, 4: 3, 5: 1, 100: 0.02}
-            res_m = 0; curr = 0; rand = random.uniform(0, sum(w.values()))
-            for m_v, weight in w.items():
-                curr += weight
-                if rand <= curr: res_m = m_v; break
-            new_bal = u[0] + (bet * res_m) - bet
-            db.execute("UPDATE users SET power_points = ?, loss_streak = ?, spins_since_win = ? WHERE user_id = ?", (new_bal, (u[1]+1 if res_m==0 else 0), (u[2]+1 if res_m<=1 else 0), m.from_user.id))
-            icon = {100: "💰", 0: "🔴", 1: "🟡"}.get(res_m, "🟢")
-            st = "ДЖЕКПОТ" if res_m == 100 else "ВЫИГРЫШ" if res_m > 1 else "ПРОИГРЫШ"
-            await m.answer(f"{icon} <b>{st} x{res_m}</b>\n━━━━━━━━━━━━━━\n💸 Ставка: <code>{bet}</code>\n💎 Итог: <code>{bet*res_m}</code>\n💰 Баланс: <code>{new_bal}</code> 💠")
-        except: pass
+    elif cmd in ['лотерея', 'деп']:
+        bet = int(txt[1]) if len(txt) > 1 and txt[1].isdigit() else 50
+        u = db.execute("SELECT power_points, loss_streak, spins_since_win FROM users WHERE user_id = ?", (m.from_user.id,))
+        if u[0] < bet or bet < 1: return await m.reply("❌ Недостаточно мощи!")
+        
+        w = {0: 40, 1: 30, 2: 18, 3: 8, 4: 3, 5: 1, 100: 0.02}
+        res_m, curr, rand = 0, 0, random.uniform(0, sum(w.values()))
+        for m_v, weight in w.items():
+            curr += weight
+            if rand <= curr: res_m = m_v; break
+            
+        new_bal = u[0] + (bet * res_m) - bet
+        db.execute("UPDATE users SET power_points = ?, loss_streak = ?, spins_since_win = ? WHERE user_id = ?", 
+                   (new_bal, (u[1]+1 if res_m==0 else 0), (u[2]+1 if res_m<=1 else 0), m.from_user.id))
+        
+        icon = {100: "💰", 0: "🔴", 1: "🟡"}.get(res_m, "🟢")
+        status = "ДЖЕКПОТ" if res_m == 100 else "ВЫИГРЫШ" if res_m > 1 else "ПРОИГРЫШ"
+        await m.answer(f"{icon} <b>{status} x{res_m}</b>\n━━━━━━━━━━━━━━\n💸 Ставка: <code>{bet}</code>\n💎 Итог: <code>{bet*res_m}</code>\n💰 Баланс: <code>{new_bal}</code> 💠")
 
 @dp.callback_query_handler(lambda c: c.data.startswith('pvp_'))
 async def pvp_callback(c: types.CallbackQuery):
@@ -177,43 +176,59 @@ async def pvp_callback(c: types.CallbackQuery):
     db.execute("UPDATE users SET power_points = power_points - ? WHERE user_id = ?", (bet, lose))
     await c.message.edit_text(f"🏆 Победил <b>{(await bot.get_chat_member(c.message.chat.id, win)).user.first_name}</b>! (+{bet} 💠)")
 
-# --- 3. ИНФО (Топ, Профиль, Сбор) ---
-@dp.message_handler(lambda m: m.text and any(x in m.text.lower() for x in ['сильнейшие', 'активчики', 'ми', 'профиль', 'ю*', '.сбор']))
-async def info_branch(m: types.Message):
-    txt = m.text.lower()
+# --- 3. ИНФО-ВЕТВЬ (Ми, Помощь, Сделки) ---
+@dp.message_handler(lambda m: m.text and (m.text.lower().split()[0] in ['ми', 'профиль', 'ю*', 'help', '/help', 'сильнейшие', 'активчики', '*передать', '.сбор']))
+async def info_commands(m: types.Message):
+    txt = m.text.lower().split()
+    cmd = txt[0]
     
-    if '.сбор' in txt:
-        if m.from_user.id != OWNER_ID: return
-        all_u = db.fetchall("SELECT user_id, username FROM users")
+    if cmd == '.сбор' and m.from_user.id == OWNER_ID:
+        all_u = db.fetchall("SELECT user_id FROM users")
         stich = "".join([f'<a href="tg://user?id={u[0]}">\u200b</a>' for u in all_u])
-        return await m.answer(f"🔔 <b>ПРИЗЫВ ОБИТЕЛИ:</b>\nВсе боги приглашены к обсуждению!{stich}")
+        return await m.answer(f"🔔 <b>ПРИЗЫВ ОБИТЕЛИ!</b>{stich}")
 
-    if any(x in txt for x in ['сильнейшие', 'активчики']):
-        col = "power_points" if "сильнейшие" in txt else "msg_count"
-        users = db.fetchall(f"SELECT user_id, username, {col} FROM users ORDER BY {col} DESC LIMIT 10")
-        res = f"🏆 <b>{'ТОП МОЩИ' if 'сильнейшие' in txt else 'ТОП АКТИВА'}:</b>\n\n"
+    if cmd in ['ми', 'профиль', 'ю*']:
+        t = m.reply_to_message.from_user if m.reply_to_message else m.from_user
+        u = db.execute("SELECT power_points, msg_count, admin_rank FROM users WHERE user_id = ?", (t.id,))
+        await m.answer(f"✨ <b>СВИТОК ОБИТЕЛИ</b>\n━━━━━━━━━━━━━━\n👤 <b>Имя:</b> {get_mention(t.id, t.first_name)}\n🎖 <b>Ранг:</b> <i>{get_admin_rank_name(u[2])}</i>\n🧬 <b>Статус эв.:</b> <code>{get_evo_status(u[1])}</code>\n⚡️ <b>Мощь:</b> <code>{u[0]}</code> 💠\n📜 <b>Опыт:</b> <code>{u[1]}</code>\n━━━━━━━━━━━━━━")
+
+    elif cmd == '*передать' and m.reply_to_message:
+        try:
+            amt = int(txt[1]); uid, tid = m.from_user.id, m.reply_to_message.from_user.id
+            bal = db.execute("SELECT power_points FROM users WHERE user_id = ?", (uid,))[0]
+            if bal >= amt > 0:
+                db.execute("UPDATE users SET power_points = power_points - ? WHERE user_id = ?", (amt, uid))
+                db.execute("UPDATE users SET power_points = power_points + ? WHERE user_id = ?", (amt, tid))
+                await m.answer(f"🤝 <b>СДЕЛКА:</b>\n{get_mention(uid, m.from_user.first_name)} ➔ <code>{amt}</code> 💠 ➔ {get_mention(tid, m.reply_to_message.from_user.first_name)}")
+        except: pass
+
+    elif cmd in ['help', '/help']:
+        r = await get_user_rank(m.from_user.id)
+        msg = "📖 <b>БИБЛИОТЕКА ОБИТЕЛИ</b>\n━━━━━━━━━━━━━━\n🎮 <b>Игры:</b>\n— <code>лотерея [сумма]</code>\n— <code>пвп [сумма]</code>\n— <code>*передать [сумма]</code>\n— <code>ми / профиль / ю*</code>\n\n"
+        if r >= 1:
+            msg += f"🛠 <b>Админ (Ранг {r}):</b>\n— <code>сильнейшие / активчики</code>\n"
+            if r >= 3: msg += "— <code>кара [сумма]</code>\n— <code>гив [сумма]</code>\n"
+        if r == 100: msg += "\n👑 <b>Создатель:</b>\n— <code>эволюция [1-3]</code>\n— <code>.пд [ком] [ранг]</code>\n— <code>.сбор</code>"
+        await m.answer(msg + "\n━━━━━━━━━━━━━━")
+
+    elif cmd in ['сильнейшие', 'активчики']:
+        is_p = cmd == 'сильнейшие'
+        users = db.fetchall(f"SELECT user_id, username, {'power_points' if is_p else 'msg_count'} FROM users ORDER BY 3 DESC LIMIT 10")
+        res = f"🏆 <b>{'СИЛЬНЕЙШИЕ' if is_p else 'АКТИВЧИКИ'}:</b>\n\n"
         for i, u in enumerate(users, 1): res += f"{i}. {get_mention(u[0], u[1])} — <code>{u[2]}</code>\n"
         await m.answer(res)
 
-    elif any(x in txt for x in ['ми', 'профиль', 'ю*']):
-        t = m.reply_to_message.from_user if m.reply_to_message else m.from_user
-        u = db.execute("SELECT power_points, msg_count, admin_rank FROM users WHERE user_id = ?", (t.id,))
-        await m.answer(f"✨ <b>СВИТОК</b>\n👤 <b>Имя:</b> {get_mention(t.id, t.first_name)}\n🎖 <b>Ранг:</b> {get_admin_rank_name(u[2])}\n🧬 <b>Эволюция:</b> {get_evo_status(u[1])}\n⚡️ <b>Мощь:</b> {u[0]} 💠")
-
-# --- 4. ГЛОБАЛЬНЫЙ ОБРАБОТЧИК (Эволюция) ---
+# --- 4. ГЛОБАЛЬНЫЙ ОБРАБОТЧИК ---
 @dp.message_handler(content_types=['text'])
 async def global_handler(m: types.Message):
     check_user(m.from_user)
     u = db.execute("SELECT msg_count FROM users WHERE user_id = ?", (m.from_user.id,))
-    old_msgs = u[0]
-    new_msgs = old_msgs + 1
-    db.execute("UPDATE users SET msg_count = ? WHERE user_id = ?", (new_msgs, m.from_user.id))
-    
-    # Проверка скачка эволюции
+    old, new = u[0], u[0] + 1
+    db.execute("UPDATE users SET msg_count = ? WHERE user_id = ?", (new, m.from_user.id))
     for threshold, name in EVO_MAP.items():
-        if old_msgs < threshold <= new_msgs:
+        if old < threshold <= new:
             await m.answer(f"🎊 <b>ЭВОЛЮЦИЯ!</b>\nГерой {get_mention(m.from_user.id, m.from_user.first_name)} достиг стадии: <b>{name}</b>! ✨")
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
-        
+    
