@@ -10,7 +10,7 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=config.API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
-# --- УТИЛИТЫ ---
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def get_rank(msgs):
     if msgs >= 10000: return "Лорд 👑"
     if msgs >= 5000: return "Золотая черепаха 🐢"
@@ -30,7 +30,7 @@ async def is_admin(user_id):
     res = db.execute("SELECT admin_rank FROM users WHERE user_id = %s", (user_id,))
     return res and res[0] >= 3
 
-# --- КОМАНДА ПОМОЩИ ---
+# --- КОМАНДА ПОМОЩИ (ХЕЛП) ---
 HELP_TEXT = """📖 <b>БИБЛИОТЕКА</b>
 ━━━━━━━━━━━━━━
 🎮 <b>Игры:</b>
@@ -54,7 +54,8 @@ async def send_help(m: types.Message):
 @dp.message_handler(lambda m: m.text and m.text.lower() in ['ми', 'профиль', 'ю*'])
 async def profile(m: types.Message):
     target = m.reply_to_message.from_user if m.reply_to_message else m.from_user
-    # Запрашиваем данные в строгом порядке под индексы
+    
+    # Запрос данных (индексы: 0-мощь, 1-опыт, 2-ранг, 3-клан)
     u = db.execute("SELECT power_points, msg_count, admin_rank, clan_role FROM users WHERE user_id = %s", (target.id,))
     
     if not u:
@@ -86,7 +87,7 @@ async def tops(m: types.Message):
         res += f"{i}. {get_mention(row[0], row[1])} — <code>{row[2]}</code> {icon}\n"
     await m.answer(res)
 
-# --- АДМИН КОМАНДЫ (КАРА / ГИВ) ---
+# --- АДМИН-ИНСТРУМЕНТЫ (КАРА / ГИВ) ---
 @dp.message_handler(lambda m: m.text and m.text.lower().startswith(('гив', 'кара')))
 async def admin_tools(m: types.Message):
     if not await is_admin(m.from_user.id): return
@@ -109,11 +110,11 @@ async def admin_tools(m: types.Message):
     elif args[0].lower() == 'гив':
         try:
             amt = int(args[1])
-            db.execute("UPDATE users SET power_points = power_points + %s WHERE user_id = %s", (amt, target.id))
+            db.execute("UPDATE users SET power_points = power_points + %s WHERE user_id = %s", (target.id))
             await m.answer(f"🔱 {get_mention(target.id, target.first_name)} получил <code>{amt}</code> 💠")
         except: pass
 
-# --- ИГРЫ (ДЕП И ПВП) ---
+# --- ИГРОВЫЕ КОМАНДЫ (ДЕП / ПВП / ПЕРЕДАТЬ) ---
 @dp.message_handler(lambda m: m.text and m.text.lower().split()[0] in ['лотерея', 'деп'])
 async def loto(m: types.Message):
     try:
@@ -148,7 +149,6 @@ async def transfer(m: types.Message):
             await m.answer(f"🤝 {get_mention(uid, m.from_user.first_name)} ➡ <code>{amt}</code> 💠 ➡ {get_mention(tid, m.reply_to_message.from_user.first_name)}")
     except: pass
 
-# --- ПВП ЛОГИКА ---
 @dp.message_handler(lambda m: m.text and m.text.lower().startswith('пвп'))
 async def pvp_start(m: types.Message):
     if not m.reply_to_message: return
@@ -175,18 +175,20 @@ async def pvp_call(c: types.CallbackQuery):
     w_name = (await bot.get_chat_member(c.message.chat.id, win)).user.first_name
     await c.message.edit_text(f"🏆 В битве победил <b>{w_name}</b>!\n💰 Выигрыш: <code>{bet}</code> 💠")
 
-# --- ГЛОБАЛЬНЫЙ ОБРАБОТЧИК ---
+# --- ГЛОБАЛЬНЫЙ ОБРАБОТЧИК (ОПЫТ + КЛАНЫ) ---
 @dp.message_handler(content_types=['text'])
 async def global_handler(m: types.Message):
+    # Учет сообщения
     name = m.from_user.first_name.replace("<", "").replace(">", "")
     db.execute(
         "INSERT INTO users (user_id, username, power_points, msg_count) VALUES (%s, %s, 100, 1) "
         "ON CONFLICT (user_id) DO UPDATE SET msg_count = users.msg_count + 1, username = %s",
         (m.from_user.id, name, name)
     )
+    # Кланы
     if m.text and m.text.lower().split()[0] in ['клан', 'пантеон', 'создать']:
         await clan_router(m)
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
-    
+        
