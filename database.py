@@ -3,12 +3,13 @@ import os
 
 class Database:
     def __init__(self):
+        # Подключаемся к БД через переменную окружения
         self.conn = psycopg2.connect(os.getenv('DATABASE_URL'), sslmode='require')
         self.cursor = self.conn.cursor()
         self.create_tables()
 
     def create_tables(self):
-        # Таблица пользователей
+        # Таблица пользователей с колонками для админки и кланов
         self.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -20,7 +21,7 @@ class Database:
                 clan_role TEXT
             )
         """)
-        # Таблица кланов (SERIAL вместо AUTOINCREMENT)
+        # Таблица кланов (используем SERIAL для авто-ID)
         self.execute("""
             CREATE TABLE IF NOT EXISTS clans (
                 clan_id SERIAL PRIMARY KEY,
