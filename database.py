@@ -17,27 +17,21 @@ class Database:
         self.cursor = self.conn.cursor()
 
     def init_db(self):
-        # Таблица пользователей
+        # Таблица душ
         self.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY, 
-                username TEXT, 
-                power_points INTEGER DEFAULT 100, 
-                msg_count INTEGER DEFAULT 0, 
-                admin_rank INTEGER DEFAULT 0,
-                clan_id INTEGER DEFAULT 0,
+                user_id BIGINT PRIMARY KEY, username TEXT, 
+                power_points INTEGER DEFAULT 100, msg_count INTEGER DEFAULT 0, 
+                admin_rank INTEGER DEFAULT 0, clan_id INTEGER DEFAULT 0,
                 clan_role TEXT DEFAULT 'Нет'
             )
         """)
-        # Таблица кланов (Пантеонов)
+        # Таблица Пантеонов
         self.execute("""
             CREATE TABLE IF NOT EXISTS clans (
                 clan_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                clan_name TEXT UNIQUE,
-                creator_id BIGINT,
-                treasury INTEGER DEFAULT 0,
-                level INTEGER DEFAULT 1,
-                members_count INTEGER DEFAULT 1
+                clan_name TEXT UNIQUE, creator_id BIGINT,
+                treasury INTEGER DEFAULT 0, level INTEGER DEFAULT 1
             )
         """)
 
