@@ -1,4 +1,4 @@
-import logging, sqlite3, os, random
+import logging, sqlite3, os, random, time
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -6,7 +6,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 # --- КОНФИГУРАЦИЯ ---
 API_TOKEN = os.getenv('BOT_TOKEN')
 DATABASE_URL = os.getenv('DATABASE_URL')
-ADMIN_ID = 7361338806  # Твой ID
+ADMIN_ID = 7361338806 
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
@@ -37,24 +37,136 @@ class Database:
         return self.cursor.fetchall()
 
 db = Database()
+# Добавляем таблицу логов для системы защиты
 db.execute("CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, username TEXT, power_points INTEGER DEFAULT 0, msg_count INTEGER DEFAULT 0, role TEXT DEFAULT 'player')")
+db.execute("CREATE TABLE IF NOT EXISTS lotto_logs (user_id BIGINT, profit INTEGER, timestamp REAL)")
 
 def check_user(u: types.User):
     name = u.username or u.first_name or "Путник"
     db.execute("INSERT INTO users (user_id, username) VALUES (?, ?) ON CONFLICT (user_id) DO UPDATE SET username = ?", (u.id, name, name))
 
-def get_rank(msgs):
-    if msgs >= 10000: return "Лорд 👑"
-    if msgs >= 5000: return "Золотая черепаха 🐢"
-    if msgs >= 3000: return "Синий бафф 🟦"
-    if msgs >= 2000: return "Красный бафф 🟥"
-    if msgs >= 1000: return "Жук 🪲"
-    return "Вазон 🪴"
+# --- ЛОГИКА ЛОТЕРЕИ ---
 
-# --- 1. АДМИН-КОМАНДЫ (ПРИОРЕТЕТ) ---
-@dp.message_handler(lambda m: m.from_user.id == ADMIN_ID and m.text and m.text.lower().split()[0] in ['гив', 'божество+', 'божество-'])
+async def get_recent_profit(user_id):
+    five_mins_ago = time.time() - 300
+    logs = db.fetchall("SELECT profit FROM lotto_logs WHERE user_id = ? AND timestamp > ?", (user_id, five_mins_ago))
+    return sum(log[0] for log in logs)
+
+@dp.message_handler(lambda m: m.text and m.text.lower().startswith(('лотерея', 'деп')))
+async def cmd_loto(m: types.Message):
+    check_user(m.from_user)
+    try:
+        parts = m.text.split()
+        bet = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 50
+        
+        # Лимит ставки
+        if bet < 1 or bet > 500:
+            return await m.reply("⚠️ Боги принимают подношения только от `1` до `500` 💠!")
+
+        bal = db.execute("SELECT power_points FROM users WHERE user_id = ?", (m.from_user.id,))[0]
+        if bal < bet:
+            return await m.reply("❌ Твоя мощь слишком слаба для такой ставки.")
+
+        # Проверка системы защиты
+        recent_profit = await get_recent_profit(m.from_user.id)
+        is_protection_on = recent_profit > 800
+        
+        # Шансы: [x100, x5, x4, x3, x2, x1, x0]
+        chances = [0.0002, 0.005, 0.015, 0.03, 0.12, 0.35, 0.4798]
+        
+        if is_protection_on:
+            # Срезаем победные шансы на 15% (кроме x100 и x1)
+            # Уменьшаем x5, x4, x3, x2
+            reduction = 0
+            for i in [1, 2, 3, 4]:
+                old_val = chances[i]
+                new_val = old_val * 0.85
+                reduction += (old_val - new_val)
+                chances[i] = new_val
+            chances[6] += reduction # Отдаем срезанный шанс в проигрыш (x0)
+
+        # Розыгрыш
+        r = random.random()
+        cumulative = 0
+        multipliers = [100, 5, 4, 3, 2, 1, 0]
+        mult = 0
+        
+        for i, chance in enumerate(chances):
+            cumulative += chance
+            if r <= cumulative:
+                mult = multipliers[i]
+                break
+        
+        win_amount = bet * mult
+        profit = win_amount - bet
+        
+        # Обновляем БД
+        db.execute("UPDATE users SET power_points = power_points + ? WHERE user_id = ?", (profit, m.from_user.id))
+        db.execute("INSERT INTO lotto_logs (user_id, profit, timestamp) VALUES (?, ?, ?)", (m.from_user.id, profit, time.time()))
+        
+        # Визуал
+        status_icon = "🟢" if mult > 1 else "🟡" if mult == 1 else "🔴"
+        prot_msg = "\n⚠️ *Внимание богов привлечено (шансы снижены)*" if is_protection_on else ""
+        
+        res_text = {
+            100: "🔥 СВЯТОЙ ДЖЕКПОТ x100!",
+            5: "💎 Божественный дар x5!",
+            4: "✨ Высшая магия x4!",
+            3: "📜 Древний свиток x3!",
+            2: "✅ Успех x2",
+            1: "🌀 Равновесие x1",
+            0: "💀 Пустота x0"
+        }[mult]
+        
+        await m.answer(f"{status_icon} **ЛОТЕРЕЯ**\n\nРезультат: **{res_text}**\nИтог: `{win_amount}` 💠{prot_msg}", parse_mode="Markdown")
+        
+    except Exception as e:
+        logging.error(f"Lotto error: {e}")
+
+# --- ПЕРЕДАЧА (ИСПРАВЛЕНО) ---
+@dp.message_handler(lambda m: m.text and m.text.lower().startswith('передать'))
+async def cmd_transfer(m: types.Message):
+    if not m.reply_to_message: 
+        return await m.reply("⚠️ Нужно ответить на сообщение получателя!")
+    
+    try:
+        parts = m.text.split()
+        if len(parts) < 2: return
+        amt = int(parts[1])
+        uid, tid = m.from_user.id, m.reply_to_message.from_user.id
+        
+        if uid == tid: return await m.reply("Нельзя передать силы самому себе.")
+        if amt <= 0: return
+        
+        check_user(m.from_user)
+        check_user(m.reply_to_message.from_user)
+        
+        bal = db.execute("SELECT power_points FROM users WHERE user_id = ?", (uid,))[0]
+        if bal < amt:
+            return await m.reply("❌ Недостаточно сил!")
+        
+        db.execute("UPDATE users SET power_points = power_points - ? WHERE user_id = ?", (amt, uid))
+        db.execute("UPDATE users SET power_points = power_points + ? WHERE user_id = ?", (amt, tid))
+        
+        await m.answer(f"🤝 **СДЕЛКА:** {m.from_user.first_name} передал `{amt}` 💠 {m.reply_to_message.from_user.first_name}")
+    except:
+        await m.reply("Используй формат: `передать 100` через ответ.")
+
+# --- АКТИВЧИКИ ---
+@dp.message_handler(lambda m: m.text and "активчики" in m.text.lower())
+async def cmd_top_active(m: types.Message):
+    users = db.fetchall("SELECT username, msg_count FROM users ORDER BY msg_count DESC LIMIT 10")
+    res = "🔥 **ТОП АКТИВЧИКОВ ОБИТЕЛИ:**\n\n"
+    for i, u in enumerate(users, 1):
+        res += f"{i}. {u[0]} — `{u[1]}` 💬\n"
+    await m.answer(res, parse_mode="Markdown")
+
+# --- АДМИН ПАНЕЛЬ (ГИВ, БОЖЕСТВО) ---
+@dp.message_handler(lambda m: m.text and m.text.lower().split()[0] in ['гив', 'божество+', 'божество-'])
 async def admin_tools(m: types.Message):
-    if not m.reply_to_message: return await m.reply("⚠️ Ответь на сообщение цели!")
+    if m.from_user.id != ADMIN_ID: return
+    if not m.reply_to_message: return
+    
     target_id = m.reply_to_message.from_user.id
     cmd = m.text.lower().split()[0]
     
@@ -63,118 +175,23 @@ async def admin_tools(m: types.Message):
         await m.answer("⚡️ Смертный возведен в ранг **Божества**!")
     elif cmd == 'божество-':
         db.execute("UPDATE users SET role = 'player' WHERE user_id = ?", (target_id,))
-        await m.answer("☁️ Божественные силы покинули этого игрока.")
+        await m.answer("☁️ Ранг Божества отозван.")
     elif cmd == 'гив':
         try:
             amt = int(m.text.split()[1])
             db.execute("UPDATE users SET power_points = power_points + ? WHERE user_id = ?", (amt, target_id))
-            await m.answer(f"🔱 В дар получено `{amt}` 💠 силы.")
-        except: await m.answer("Формат: `гив 100` (через ответ)")
+            await m.answer(f"🔱 В дар получено `{amt}` 💠.")
+        except: pass
 
-# --- 2. ИГРОВЫЕ КОМАНДЫ ---
-
-@dp.message_handler(lambda m: m.text and m.text.lower().startswith('передать'))
-async def cmd_transfer(m: types.Message):
-    if not m.reply_to_message: return await m.reply("⚠️ Нужно ответить на сообщение получателя!")
-    try:
-        parts = m.text.split()
-        if len(parts) < 2: return
-        amt = int(parts[1])
-        uid, tid = m.from_user.id, m.reply_to_message.from_user.id
-        if uid == tid or amt <= 0: return
-        
-        check_user(m.from_user); check_user(m.reply_to_message.from_user)
-        bal = db.execute("SELECT power_points FROM users WHERE user_id = ?", (uid,))[0]
-        if bal < amt: return await m.reply("❌ Недостаточно сил для такого жеста!")
-        
-        db.execute("UPDATE users SET power_points = power_points - ? WHERE user_id = ?", (amt, uid))
-        db.execute("UPDATE users SET power_points = power_points + ? WHERE user_id = ?", (amt, tid))
-        await m.answer(f"🤝 **ПЕРЕДАЧА:** {m.from_user.first_name} ➔ `{amt}` 💠 ➔ {m.reply_to_message.from_user.first_name}")
-    except: pass
-
-@dp.message_handler(lambda m: m.text and m.text.lower().startswith(('лотерея', 'деп')))
-async def cmd_loto(m: types.Message):
-    check_user(m.from_user)
-    try:
-        parts = m.text.split()
-        bet = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 50
-        bal = db.execute("SELECT power_points FROM users WHERE user_id = ?", (m.from_user.id,))[0]
-        if bal < bet: return await m.reply("❌ Твоя чакра пуста для такой ставки!")
-        
-        # --- НОВАЯ ЛОГИКА ШАНСОВ ---
-        r = random.random()
-        if r < 0.01: mult = 10    # 1% шанс
-        elif r < 0.04: mult = 5   # 3% шанс
-        elif r < 0.10: mult = 3   # 6% шанс
-        elif r < 0.35: mult = 2   # 25% шанс
-        elif r < 0.55: mult = 1   # 20% шанс (возврат)
-        else: mult = 0            # 45% шанс проигрыша
-        
-        db.execute("UPDATE users SET power_points = power_points - ? + ? WHERE user_id = ?", (bet, bet*mult, m.from_user.id))
-        res_text = {10: "🎰 ОЛИМПИЙСКИЙ КУШ x10!", 5: "💎 ВЕЗЕНИЕ x5!", 3: "✨ МАГИЯ x3!", 2: "✅ УСПЕХ x2", 1: "🌀 ВОЗВРАТ x1", 0: "💀 ПУСТОТА x0"}[mult]
-        await m.answer(f"🎰 **ЛОТЕРЕЯ:** {res_text}\nРезультат: `{bet*mult}` 💠")
-    except: pass
-
-@dp.message_handler(lambda m: m.text and m.text.lower().startswith('пвп'))
-async def pvp_invite(m: types.Message):
-    if not m.reply_to_message: return await m.reply("⚠️ Ответь на сообщение противника!")
-    try:
-        bet = int(m.text.split()[1]) if len(m.text.split()) > 1 else 50
-        uid, tid = m.from_user.id, m.reply_to_message.from_user.id
-        if uid == tid: return
-        check_user(m.from_user); check_user(m.reply_to_message.from_user)
-        kb = InlineKeyboardMarkup().add(InlineKeyboardButton("⚔️ ПРИНЯТЬ ВЫЗОВ", callback_data=f"pvp_acc_{uid}_{bet}"))
-        await m.answer(f"👊 **ВЫЗОВ!** {m.from_user.first_name} жаждет битвы с {m.reply_to_message.from_user.first_name}!\nСтавка: `{bet}` 💠", reply_markup=kb)
-    except: pass
-
-@dp.callback_query_handler(lambda c: c.data.startswith('pvp_acc'))
-async def pvp_start(c: types.CallbackQuery):
-    _, _, challenger_id, bet = c.data.split('_')
-    challenger_id, bet = int(challenger_id), int(bet)
-    defender_id = c.from_user.id
-    if c.from_user.id == challenger_id: return await c.answer("Нельзя биться с самим собой!")
-    
-    b1 = db.execute("SELECT power_points FROM users WHERE user_id = ?", (challenger_id,))[0]
-    b2 = db.execute("SELECT power_points FROM users WHERE user_id = ?", (defender_id,))[0]
-    if b1 < bet or b2 < bet: return await c.answer("❌ У кого-то не хватает сил!", show_alert=True)
-    
-    win = random.choice([challenger_id, defender_id])
-    lose = defender_id if win == challenger_id else challenger_id
-    db.execute("UPDATE users SET power_points = power_points + ? WHERE user_id = ?", (bet, win))
-    db.execute("UPDATE users SET power_points = power_points - ? WHERE user_id = ?", (bet, lose))
-    
-    winner = await bot.get_chat_member(c.message.chat.id, win)
-    await c.message.edit_text(f"⚔️ **АРЕНА:** В жестоком бою победил **{winner.user.first_name}**! (+{bet} 💠)")
-
-# --- 3. ЛИДЕРБОРДЫ ---
-
-@dp.message_handler(lambda m: m.text and (m.text.lower().startswith('/top') or "сильнейшие" in m.text.lower()))
-async def cmd_top_power(m: types.Message):
-    users = db.fetchall("SELECT username, power_points FROM users ORDER BY power_points DESC LIMIT 10")
-    res = "🏆 **СИЛЬНЕЙШИЕ БОГИ:**\n\n"
-    for i, u in enumerate(users, 1):
-        res += f"{i}. {u[0]} — `{u[1]}` 💠\n"
-    await m.answer(res, parse_mode="Markdown")
-
-@dp.message_handler(lambda m: m.text and "активчики" in m.text.lower())
-async def cmd_top_active(m: types.Message):
-    users = db.fetchall("SELECT username, msg_count FROM users ORDER BY msg_count DESC LIMIT 10")
-    res = "🔥 **САМЫЕ АКТИВНЫЕ:**\n\n"
-    for i, u in enumerate(users, 1):
-        res += f"{i}. {u[0]} — `{u[1]}` 💬\n"
-    await m.answer(res, parse_mode="Markdown")
-
-# --- 4. ПРОФИЛЬ ---
-
+# --- ПРОФИЛЬ ---
 @dp.message_handler(lambda m: m.text and m.text.lower().strip() in ['ми', 'профиль', 'ю*'])
 async def cmd_profile(m: types.Message):
     t = m.reply_to_message.from_user if m.reply_to_message else m.from_user
     check_user(t)
     u = db.execute("SELECT power_points, msg_count, role FROM users WHERE user_id = ?", (t.id,))
-    rank = u[2].upper() if u[2] == 'admin' else get_rank(u[1])
-    await m.answer(f"💠 **ИНФО:** {t.full_name}\n🎖 **Ранг:** `{rank}`\n⚡️ **Мощь:** `{u[0]}`\n💬 **Активность:** `{u[1]}`", parse_mode="Markdown")
+    await m.answer(f"💠 **ИНФО:** {t.full_name}\n🎖 **Ранг:** `{u[2].upper()}`\n⚡️ **Мощь:** `{u[0]}`\n💬 **Активность:** `{u[1]}`")
 
-# --- 5. СЧЕТЧИК (СТРОГО ПОСЛЕДНИЙ) ---
+# --- СЧЕТЧИК (СТРОГО ПОСЛЕДНИЙ) ---
 @dp.message_handler(content_types=['text'])
 async def count_msgs(m: types.Message):
     check_user(m.from_user)
@@ -182,4 +199,4 @@ async def count_msgs(m: types.Message):
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
-                    
+        
