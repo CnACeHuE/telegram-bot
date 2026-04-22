@@ -37,7 +37,7 @@ class Database:
         return self.cursor.fetchall()
 
 db = Database()
-# Создаем таблицу с новыми полями для логики лотереи
+# Автоматическое создание/обновление таблиц
 db.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id BIGINT PRIMARY KEY, 
@@ -56,16 +56,16 @@ def check_user(u: types.User):
     INSERT INTO users (user_id, username) VALUES (?, ?) 
     ON CONFLICT (user_id) DO UPDATE SET username = ?""", (u.id, name, name))
 
-# --- ЯДРО УМНОЙ ЛОТЕРЕИ ---
+# --- ЛОГИКА УМНОЙ ЛОТЕРЕИ (CORE) ---
 
 BASE_WEIGHTS = {
-    0: 50,    # Проигрыш
-    1: 30,    # Возврат
-    2: 12,    # x2
+    0: 45,    # Проигрыш
+    1: 35,    # Возврат
+    2: 13,    # x2
     3: 5,     # x3
-    4: 2,     # x4
-    5: 1,     # x5
-    100: 0.02 # Джекпот (очень редкий)
+    4: 1.5,   # x4
+    5: 0.5,   # x5
+    100: 0.02 # Джекпот (0.02%)
 }
 
 TARGET_RTP = 0.92
@@ -77,40 +77,40 @@ def calculate_rtp(weights):
 def adjust_weights(weights, loss_streak, spins_since_win, balance, bet, is_protection):
     w = weights.copy()
     
-    # 🔁 Anti-tilt: помогаем при серии неудач
+    # 🔁 Anti-tilt: После 3 сливов подряд уменьшаем шанс проигрыша
     if loss_streak >= 3:
         w[0] -= 10
         w[2] += 5
         w[1] += 5
     
-    # 🎁 Гарант: после 7 проигрышей победа обязательна
+    # 🎁 Pity System (Гарант): После 7 проигрышей убираем x0
     if spins_since_win >= 7:
         w[0] = 0
         w[2] += 15
         w[1] += 10
 
-    # 💰 Помощь новичкам / беднякам
+    # 💰 Помощь при низком балансе
     if balance < bet * 3:
         w[0] -= 5
         w[1] += 5
 
-    # 🛡 СИСТЕМА ЗАЩИТЫ (если профит > 800)
+    # 🛡 СИСТЕМА ЗАЩИТЫ: Если игрок в сильном плюсе (> 800 за 5 мин)
     if is_protection:
-        w[0] += 20  # Резко повышаем шанс проигрыша
-        for k in [2, 3, 4, 5]: w[k] *= 0.5 # Режем иксы в два раза
+        w[0] += 25  # Шанс проиграть растет
+        for k in [2, 3, 4, 5]: w[k] *= 0.4 # Иксы режутся на 60%
 
-    # 🧠 Контроль RTP
+    # 🧠 Контроль RTP (удержание экономики на уровне 92%)
     curr_rtp = calculate_rtp(w)
     if curr_rtp > TARGET_RTP:
         w[0] += 5
-        if w[5] > 0.5: w[5] -= 0.5
+        for k in [4, 5]: w[k] *= 0.8
     elif curr_rtp < TARGET_RTP - 0.1:
-        w[2] += 3
+        w[2] += 5
 
-    # Убираем отрицательные веса
+    # Финальная чистка (веса не могут быть меньше 0)
     return {k: max(0, v) for k, v in w.items()}
 
-# --- КОМАНДА ЛОТЕРЕИ ---
+# --- ОБРАБОТЧИКИ КОМАНД ---
 
 @dp.message_handler(lambda m: m.text and m.text.lower().startswith(('лотерея', 'деп')))
 async def cmd_loto(m: types.Message):
@@ -118,37 +118,44 @@ async def cmd_loto(m: types.Message):
     try:
         parts = m.text.split()
         bet = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 50
-        if bet < 1 or bet > 500: return await m.reply("⚠️ Ставки от `1` до `500`!")
+        
+        if bet < 1 or bet > 500:
+            return await m.reply("⚠️ Боги принимают ставки от `1` до `500` 💠!")
 
+        # Получаем данные игрока
         u = db.execute("SELECT power_points, loss_streak, spins_since_win FROM users WHERE user_id = ?", (m.from_user.id,))
         balance, loss_s, spins_s = u
 
-        if balance < bet: return await m.reply("❌ Недостаточно сил!")
+        if balance < bet:
+            return await m.reply("❌ Недостаточно магической энергии для этой ставки.")
 
-        # Проверка защиты (профит за 5 мин)
+        # Проверка "Режима Защиты" (профит за последние 5 минут)
         five_mins_ago = time.time() - 300
         logs = db.fetchall("SELECT profit FROM lotto_logs WHERE user_id = ? AND timestamp > ?", (m.from_user.id, five_mins_ago))
         recent_profit = sum(log[0] for log in logs)
         is_protection = recent_profit > 800
 
-        # Получаем веса и крутим
+        # Получаем веса и крутим колесо
         weights = adjust_weights(BASE_WEIGHTS, loss_s, spins_s, balance, bet, is_protection)
         
-        # Выбор результата
         total_w = sum(weights.values())
         rand = random.uniform(0, total_w)
         cumulative = 0
         multiplier = 0
+        
         for m_val, weight in weights.items():
             cumulative += weight
             if rand <= cumulative:
                 multiplier = m_val
                 break
 
-        # Обновление статистики
+        # Обновление данных
+        # loss_streak растет только при x0
+        # spins_since_win растет при x0 и x1
         new_loss_s = loss_s + 1 if multiplier == 0 else 0
         new_spins_s = spins_s + 1 if multiplier <= 1 else 0
-        win_amt = bet * multiplier
+        
+        win_amt = int(bet * multiplier)
         profit = win_amt - bet
 
         db.execute("""
@@ -159,33 +166,32 @@ async def cmd_loto(m: types.Message):
         db.execute("INSERT INTO lotto_logs (user_id, profit, timestamp) VALUES (?, ?, ?)", 
                    (m.from_user.id, profit, time.time()))
 
-        # Ответ игроку
+        # Визуал ответа
         icons = {100: "🔱", 5: "💎", 4: "🔥", 3: "✨", 2: "✅", 1: "🌀", 0: "💀"}
-        prot_warning = "\n⚠️ *Боги следят за твоей удачей...*" if is_protection else ""
+        res_text = {100: "ДЖЕКПОТ x100!", 5: "Дар Богов x5", 4: "Магия x4", 3: "Удача x3", 2: "Выигрыш x2", 1: "Возврат x1", 0: "Пустота x0"}
+        
+        prot_status = "\n⚠️ *Вы под наблюдением (защита ON)*" if is_protection else ""
         
         await m.answer(
-            f"{icons.get(multiplier, '🎰')} **ЛОТЕРЕЯ**\n\n"
-            f"Множитель: **x{multiplier}**\n"
-            f"Итог: `{win_amt}` 💠{prot_warning}", 
+            f"{icons.get(multiplier, '🎰')} **{res_text.get(multiplier)}**\n"
+            f"Ставка: `{bet}` 💠\n"
+            f"Получено: **{win_amt}** 💠{prot_status}", 
             parse_mode="Markdown"
         )
 
     except Exception as e:
-        logging.error(e)
-
-# --- ОСТАЛЬНЫЕ КОМАНДЫ (ПЕРЕДАЧА, АКТИВЧИКИ, ПРОФИЛЬ) ---
-# (Код остается таким же стабильным, как в v33)
+        logging.error(f"Lotto Critical: {e}")
 
 @dp.message_handler(lambda m: m.text and m.text.lower().startswith('передать'))
 async def cmd_transfer(m: types.Message):
-    if not m.reply_to_message: return await m.reply("⚠️ Ответь на сообщение получателя!")
+    if not m.reply_to_message: return await m.reply("⚠️ Ответь на сообщение того, кому хочешь передать силу!")
     try:
         amt = int(m.text.split()[1])
         uid, tid = m.from_user.id, m.reply_to_message.from_user.id
         if uid == tid or amt <= 0: return
         check_user(m.from_user); check_user(m.reply_to_message.from_user)
         bal = db.execute("SELECT power_points FROM users WHERE user_id = ?", (uid,))[0]
-        if bal < amt: return await m.reply("❌ Мало сил!")
+        if bal < amt: return await m.reply("❌ Твоя мощь слишком мала для такого дара!")
         db.execute("UPDATE users SET power_points = power_points - ? WHERE user_id = ?", (amt, uid))
         db.execute("UPDATE users SET power_points = power_points + ? WHERE user_id = ?", (amt, tid))
         await m.answer(f"🤝 **СДЕЛКА:** {m.from_user.first_name} ➔ `{amt}` 💠 ➔ {m.reply_to_message.from_user.first_name}")
@@ -195,7 +201,8 @@ async def cmd_transfer(m: types.Message):
 async def cmd_top_active(m: types.Message):
     users = db.fetchall("SELECT username, msg_count FROM users ORDER BY msg_count DESC LIMIT 10")
     res = "🔥 **АКТИВЧИКИ ОБИТЕЛИ:**\n\n"
-    for i, u in enumerate(users, 1): res += f"{i}. {u[0]} — `{u[1]}` 💬\n"
+    for i, u in enumerate(users, 1):
+        res += f"{i}. {u[0]} — `{u[1]}` 💬\n"
     await m.answer(res, parse_mode="Markdown")
 
 @dp.message_handler(lambda m: m.text and m.text.lower().strip() in ['ми', 'профиль', 'ю*'])
@@ -203,8 +210,9 @@ async def cmd_profile(m: types.Message):
     t = m.reply_to_message.from_user if m.reply_to_message else m.from_user
     check_user(t)
     u = db.execute("SELECT power_points, msg_count, role FROM users WHERE user_id = ?", (t.id,))
-    await m.answer(f"💠 **ИНФО:** {t.full_name}\n🎖 **Ранг:** `{u[2].upper()}`\n⚡️ **Мощь:** `{u[0]}`\n💬 **Активность:** `{u[1]}`")
+    await m.answer(f"💠 **ПРОФИЛЬ:** {t.full_name}\n🎖 **Ранг:** `{u[2].upper()}`\n⚡️ **Сила:** `{u[0]}`\n💬 **Сообщений:** `{u[1]}`")
 
+# --- СЧЕТЧИК (СТРОГО ПОСЛЕДНИЙ) ---
 @dp.message_handler(content_types=['text'])
 async def count_msgs(m: types.Message):
     check_user(m.from_user)
@@ -212,4 +220,4 @@ async def count_msgs(m: types.Message):
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
-        
+    
