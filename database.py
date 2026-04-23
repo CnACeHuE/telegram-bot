@@ -3,14 +3,13 @@ import os
 
 class Database:
     def __init__(self):
-        # Подключаемся к БД через переменную окружения
+        # Подключаемся к Postgres на Railway
         self.conn = psycopg2.connect(os.getenv('DATABASE_URL'), sslmode='require')
         self.cursor = self.conn.cursor()
         self.create_tables()
 
     def create_tables(self):
-        # Таблица пользователей с колонками для админки и кланов
-        self.execute("""
+        self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
                 username TEXT,
@@ -21,26 +20,19 @@ class Database:
                 clan_role TEXT
             )
         """)
-        # Таблица кланов (используем SERIAL для авто-ID)
-        self.execute("""
-            CREATE TABLE IF NOT EXISTS clans (
-                clan_id SERIAL PRIMARY KEY,
-                clan_name TEXT UNIQUE,
-                owner_id BIGINT,
-                balance BIGINT DEFAULT 0,
-                members_count INTEGER DEFAULT 1
-            )
-        """)
+        self.conn.commit()
 
     def execute(self, sql, params=()):
         try:
             self.cursor.execute(sql, params)
             self.conn.commit()
+            # ВОТ ТУТ ИСПРАВЛЕНИЕ: если это SELECT, возвращаем данные
             if sql.strip().upper().startswith("SELECT"):
                 return self.cursor.fetchone()
         except Exception as e:
             self.conn.rollback()
-            print(f"DB Error: {e}")
+            print(f"Ошибка БД: {e}")
+            return None
 
     def fetchall(self, sql, params=()):
         self.cursor.execute(sql, params)
