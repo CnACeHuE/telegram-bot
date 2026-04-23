@@ -1,4 +1,5 @@
 import logging
+import random  # Обязательно для ПВП кнопок
 from aiogram import Bot, Dispatcher, executor, types
 import config, handlers
 from database import db
@@ -7,48 +8,90 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=config.API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
-# 1. Справка
+# --- ПОРЯДОК ОБРАБОТКИ (ВАЖНО!) ---
+
+# 1. Профиль и Ю* (Поднимаем в самый верх, чтобы работали мгновенно)
+@dp.message_handler(lambda m: m.text and m.text.lower() in ['ми', 'профиль', 'ю*'])
+async def h_profile(m: types.Message): 
+    await handlers.cmd_profile(m)
+
+# 2. Справка
 @dp.message_handler(commands=['help', 'start'])
 @dp.message_handler(lambda m: m.text and m.text.lower() == 'помощь')
 async def h_help(m: types.Message):
-    await m.answer("📖 <b>СПРАВОЧНИК</b>\n━━━━━━━━━━━━━━\n👤 <code>Ми</code>, <code>Профиль</code>\n🎮 <code>Деп</code>, <code>Пвп</code>\n🏛 <code>Клан</code>, <code>Возглавить</code>\n🛡 <code>Кара</code>, <code>Гив</code>, <code>.сбор</code>")
+    await m.answer(
+        "📖 <b>СПРАВОЧНИК ОБИТЕЛИ</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        "👤 <code>Ми</code>, <code>Профиль</code>, <code>Ю*</code>\n"
+        "🎮 <code>Деп [сумма]</code>, <code>Пвп [сумма]</code>\n"
+        "🏛 <code>Клан</code>, <code>Возглавить [имя]</code>\n"
+        "🛡 <code>Кара</code>, <code>Гив</code>, <code>.сбор</code>\n"
+        "━━━━━━━━━━━━━━"
+    )
 
-# 2. Игры
+# 3. Игры
 @dp.message_handler(lambda m: m.text and m.text.lower().startswith(('деп', 'лотерея')))
-async def h_dep(m: types.Message): await handlers.cmd_dep(m)
+async def h_dep(m: types.Message): 
+    await handlers.cmd_dep(m)
 
 @dp.message_handler(lambda m: m.text and m.text.lower().startswith('пвп'))
-async def h_pvp(m: types.Message): await handlers.cmd_pvp(m)
+async def h_pvp(m: types.Message): 
+    await handlers.cmd_pvp(m)
 
-# 3. Кланы
+# 4. Кланы
 @dp.message_handler(lambda m: m.text and m.text.lower().startswith(('возглавить', 'клан')))
-async def h_clan(m: types.Message): await handlers.cmd_clan(m)
+async def h_clan(m: types.Message): 
+    await handlers.cmd_clan(m)
 
-# 4. Админка (Включая ГИВ)
+# 5. Админка
 @dp.message_handler(lambda m: m.text and m.text.lower().startswith(('.пд', 'гив', 'кара', '.сбор')))
-async def h_admin(m: types.Message): await handlers.cmd_admin(m)
+async def h_admin(m: types.Message): 
+    await handlers.cmd_admin(m)
 
-# 5. Профиль и Топы (через импорт handlers)
-@dp.message_handler(lambda m: m.text and m.text.lower() in ['ми', 'профиль', 'ю*'])
-async def h_profile(m: types.Message): await handlers.cmd_profile(m)
+# 6. Топы
+@dp.message_handler(lambda m: m.text and m.text.lower() in ['сильнейшие', 'активчики'])
+async def h_tops(m: types.Message): 
+    await handlers.cmd_tops(m)
 
-# 6. Кнопки ПВП (Callback)
+# 7. Кнопки ПВП (Callback)
 @dp.callback_query_handler(lambda c: c.data.startswith('pvp_'))
 async def h_pvp_btn(c: types.CallbackQuery):
     _, creator_id, bet = c.data.split('_')
     creator_id, bet = int(creator_id), int(bet)
-    if c.from_user.id == creator_id: return await c.answer("Нельзя биться с собой!", show_alert=True)
+    
+    if c.from_user.id == creator_id: 
+        return await c.answer("Нельзя биться с самим собой! Это путь к безумию.", show_alert=True)
+    
+    # Повторная проверка баланса перед самим боем
+    p1 = db.execute("SELECT power_points FROM users WHERE user_id = %s", (creator_id,))
+    p2 = db.execute("SELECT power_points FROM users WHERE user_id = %s", (c.from_user.id,))
+    
+    if not p1 or p1[0] < bet or not p2 or p2[0] < bet:
+        return await c.answer("Один из воинов растерял свою мощь! Бой отменен.", show_alert=True)
+
     winner = random.choice([creator_id, c.from_user.id])
     loser = c.from_user.id if winner == creator_id else creator_id
+    
     db.execute("UPDATE users SET power_points = power_points + %s WHERE user_id = %s", (bet, winner))
     db.execute("UPDATE users SET power_points = power_points - %s WHERE user_id = %s", (bet, loser))
-    await c.message.edit_text(f"⚔️ Победил: {handlers.get_mention(winner, 'Чемпион')}\nВыигрыш: <code>{bet}</code> 💠")
+    
+    await c.message.edit_text(
+        f"⚔️ <b>БОЙ ЗАВЕРШЕН</b>\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"🏆 Победитель: {handlers.get_mention(winner, 'Чемпион')}\n"
+        f"💰 Выигрыш: <code>{bet}</code> 💠\n"
+        f"━━━━━━━━━━━━━━"
+    )
 
-# 7. Опыт (ВСЕГДА В КОНЦЕ)
+# 8. Опыт (СТРОГО ПОСЛЕДНИЙ)
 @dp.message_handler(content_types=['text'])
 async def h_xp(m: types.Message):
-    db.execute("INSERT INTO users (user_id, username, msg_count, power_points) VALUES (%s, %s, 1, 100) "
-               "ON CONFLICT (user_id) DO UPDATE SET msg_count = users.msg_count + 1", (m.from_user.id, m.from_user.first_name))
+    db.execute(
+        "INSERT INTO users (user_id, username, msg_count, power_points) VALUES (%s, %s, 1, 100) "
+        "ON CONFLICT (user_id) DO UPDATE SET msg_count = users.msg_count + 1, username = EXCLUDED.username", 
+        (m.from_user.id, m.from_user.first_name)
+    )
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
+    
