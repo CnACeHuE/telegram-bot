@@ -1,4 +1,4 @@
-import random  # Исправлено: импорт с маленькой буквы
+import random
 from aiogram import types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import config
@@ -7,7 +7,6 @@ from utils import get_mention, get_evo, check_access
 
 # --- ПРОФИЛЬ ---
 async def cmd_profile(m: types.Message):
-    # Если это реплай — смотрим цель, если нет — себя
     target = m.reply_to_message.from_user if m.reply_to_message else m.from_user
     u = db.execute("SELECT power_points, msg_count, admin_rank, clan_id, clan_role FROM users WHERE user_id = %s", (target.id,))
     
@@ -57,14 +56,13 @@ async def cmd_pvp(m: types.Message):
     args = m.text.split()
     bet = int(args[1]) if len(args) > 1 and args[1].isdigit() else 50
     
-    # Проверка баланса обоих участников
     p1 = db.execute("SELECT power_points FROM users WHERE user_id = %s", (m.from_user.id,))
     p2 = db.execute("SELECT power_points FROM users WHERE user_id = %s", (m.reply_to_message.from_user.id,))
     
     if not p1 or p1[0] < bet:
         return await m.reply(f"❌ {get_mention(m.from_user.id, m.from_user.first_name)}, у тебя маловато мощи!")
     if not p2 or p2[0] < bet:
-        return await m.reply(f"❌ У противника ({m.reply_to_message.from_user.first_name}) недостаточно мощи!")
+        return await m.reply(f"❌ У противника недостаточно мощи!")
     
     kb = InlineKeyboardMarkup().add(InlineKeyboardButton("⚔️ ПРИНЯТЬ БОЙ", callback_data=f"pvp_{m.from_user.id}_{bet}"))
     await m.answer(f"⚔️ {get_mention(m.from_user.id, m.from_user.first_name)} вызывает на бой!\nСтавка: <code>{bet}</code> 💠", reply_markup=kb)
@@ -90,15 +88,18 @@ async def cmd_clan(m: types.Message):
     uid = m.from_user.id
     
     if text.startswith('возглавить'):
-        name = " ".join(m.text.split()[1:])  # Исправлен срез названия
-        if not name: return await m.reply("Введите название пантеона!")
+        parts = m.text.split()
+        if len(parts) < 2: return await m.reply("✨ Введите название!")
+        
+        # Умный захват названия (пропускает слово "пантеон")
+        name = " ".join(parts[2:]) if parts[1].lower() == 'пантеон' else " ".join(parts[1:])
+            
         try:
-            # RETURNING предотвращает ошибку 'NoneType'
             res = db.execute("INSERT INTO clans (clan_name, leader_id) VALUES (%s, %s) RETURNING clan_id", (name, uid))
             db.execute("UPDATE users SET clan_id = %s, clan_role = 'Глава' WHERE user_id = %s", (res[0], uid))
-            await m.answer(f"🏛 Пантеон «{name}» успешно основан!")
+            await m.answer(f"🏛 <b>ВЕЛИКОЕ СОБЫТИЕ</b>\n━━━━━━━━━━━━━━\nПантеон «<b>{name}</b>» официально основан!")
         except Exception: 
-            await m.reply("❌ Ошибка: название уже занято или вы уже в клане.")
+            await m.reply("❌ Ошибка: имя занято или вы уже в клане.")
     
     elif text == 'клан':
         u = db.execute("SELECT clan_id, clan_role FROM users WHERE user_id = %s", (uid,))
@@ -115,7 +116,8 @@ async def cmd_admin(m: types.Message):
         if not await check_access(m, 1): return
         users = db.fetchall("SELECT user_id FROM users WHERE msg_count > 0 LIMIT 50")
         mentions = "".join([f'<a href="tg://user?id={u[0]}">\u200b</a>' for u in users])
-        return await m.answer(f"🔔 <b>СБОР ОБИТЕЛИ!</b>\n{mentions}")
+        msg = m.text[6:] if len(m.text) > 6 else "Всем явиться в Обитель!"
+        return await m.answer(f"🔔 <b>ОБЩИЙ СБОР</b>\n━━━━━━━━━━━━━━\n📢 <b>Призыв:</b> {msg}\n━━━━━━━━━━━━━━\n{mentions}")
 
     if not m.reply_to_message: return await m.reply("Ответь на сообщение цели!")
     target = m.reply_to_message.from_user
@@ -124,13 +126,13 @@ async def cmd_admin(m: types.Message):
         if not await check_access(m, 3): return
         val = int(args[1]) if len(args) > 1 and args[1].isdigit() else 1000
         db.execute("UPDATE users SET power_points = power_points + %s WHERE user_id = %s", (val, target.id))
-        await m.answer(f"🔱 <b>ДАР</b>\n👤 {get_mention(target.id, target.first_name)}\n📈 Выдано: <code>{val}</code> 💠")
+        await m.answer(f"🔱 <b>ДАР</b>\n👤 {get_mention(target.id, target.first_name)} ➜ <code>+{val}</code> 💠")
 
     elif text.startswith('кара'):
         if not await check_access(m, 2): return
         val = int(args[1]) if len(args) > 1 and args[1].isdigit() else 500
         db.execute("UPDATE users SET power_points = GREATEST(0, power_points - %s) WHERE user_id = %s", (val, target.id))
-        await m.answer(f"⚡️ <b>КАРА</b>\n👤 {get_mention(target.id, target.first_name)}\n📉 Изъято: <code>{val}</code> 💠")
+        await m.answer(f"⚡️ <b>КАРА</b>\n👤 {get_mention(target.id, target.first_name)} ➜ <code>-{val}</code> 💠")
 
     elif text.startswith('.пд'):
         if int(m.from_user.id) != int(config.OWNER_ID): return
