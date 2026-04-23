@@ -1,9 +1,38 @@
-import random
+import random  # Исправлено: импорт с маленькой буквы
 from aiogram import types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import config
 from database import db
 from utils import get_mention, get_evo, check_access
+
+# --- ПРОФИЛЬ ---
+async def cmd_profile(m: types.Message):
+    # Если это реплай — смотрим цель, если нет — себя
+    target = m.reply_to_message.from_user if m.reply_to_message else m.from_user
+    u = db.execute("SELECT power_points, msg_count, admin_rank, clan_id, clan_role FROM users WHERE user_id = %s", (target.id,))
+    
+    if not u:
+        db.execute("INSERT INTO users (user_id, username, power_points, msg_count, admin_rank) VALUES (%s, %s, 100, 0, 0)", 
+                   (target.id, target.first_name))
+        u = (100, 0, 0, None, None)
+
+    pwr, msgs, adm, c_id, c_role = u
+    status = "БОЖЕСТВО 🔱" if int(target.id) == int(config.OWNER_ID) else config.ADM_RANKS.get(adm, "Участник")
+    
+    clan_line = ""
+    if c_id:
+        c_name = db.execute("SELECT clan_name FROM clans WHERE clan_id = %s", (c_id,))
+        if c_name: 
+            clan_line = f"🏛 <b>Пантеон:</b> {c_name[0]} (<i>{c_role}</i>)\n"
+
+    await m.answer(
+        f"✨ <b>СВИТОК ОБИТЕЛИ</b>\n━━━━━━━━━━━━━━\n"
+        f"👤 <b>Имя:</b> {get_mention(target.id, target.first_name)}\n"
+        f"🎖 <b>Статус:</b> <i>{get_evo(msgs)}</i>\n"
+        f"🔱 <b>Ранг:</b> {status}\n{clan_line}"
+        f"⚡️ <b>Мощь:</b> <code>{pwr}</code> 💠\n"
+        f"📜 <b>Опыт:</b> <code>{msgs}</code>\n━━━━━━━━━━━━━━"
+    )
 
 # --- ИГРЫ ---
 async def cmd_dep(m: types.Message):
@@ -11,7 +40,8 @@ async def cmd_dep(m: types.Message):
     bet = int(args[1]) if len(args) > 1 and args[1].isdigit() else 50
     u_pwr = db.execute("SELECT power_points FROM users WHERE user_id = %s", (m.from_user.id,))
     
-    if not u_pwr or u_pwr[0] < bet: return await m.reply("❌ Недостаточно мощи!")
+    if not u_pwr or u_pwr[0] < bet: 
+        return await m.reply("❌ Недостаточно мощи!")
     
     mult = random.choices([0, 1, 2, 5, 10], weights=[58, 22, 12, 6, 2])[0]
     win = bet * mult
@@ -21,12 +51,38 @@ async def cmd_dep(m: types.Message):
     await m.answer(f"{color} <b>ЛОТЕРЕЯ</b>\n━━━━━━━━━━━━━━\n💸 Ставка: {bet}\n💎 Множитель: x{mult}\n💰 Баланс: {u_pwr[0] - bet + win} 💠")
 
 async def cmd_pvp(m: types.Message):
-    if not m.reply_to_message: return await m.reply("Ответь на сообщение противника!")
+    if not m.reply_to_message: 
+        return await m.reply("Ответь на сообщение противника!")
+    
     args = m.text.split()
     bet = int(args[1]) if len(args) > 1 and args[1].isdigit() else 50
     
+    # Проверка баланса обоих участников
+    p1 = db.execute("SELECT power_points FROM users WHERE user_id = %s", (m.from_user.id,))
+    p2 = db.execute("SELECT power_points FROM users WHERE user_id = %s", (m.reply_to_message.from_user.id,))
+    
+    if not p1 or p1[0] < bet:
+        return await m.reply(f"❌ {get_mention(m.from_user.id, m.from_user.first_name)}, у тебя маловато мощи!")
+    if not p2 or p2[0] < bet:
+        return await m.reply(f"❌ У противника ({m.reply_to_message.from_user.first_name}) недостаточно мощи!")
+    
     kb = InlineKeyboardMarkup().add(InlineKeyboardButton("⚔️ ПРИНЯТЬ БОЙ", callback_data=f"pvp_{m.from_user.id}_{bet}"))
     await m.answer(f"⚔️ {get_mention(m.from_user.id, m.from_user.first_name)} вызывает на бой!\nСтавка: <code>{bet}</code> 💠", reply_markup=kb)
+
+# --- ЛИДЕРБОРДЫ ---
+async def cmd_tops(m: types.Message):
+    text = m.text.lower()
+    if 'сильнейшие' in text:
+        rows = db.fetchall("SELECT user_id, username, power_points FROM users ORDER BY power_points DESC LIMIT 10")
+        title, unit = "СИЛЬНЕЙШИЕ 💠", "мощи"
+    else:
+        rows = db.fetchall("SELECT user_id, username, msg_count FROM users ORDER BY msg_count DESC LIMIT 10")
+        title, unit = "АКТИВЧИКИ 📈", "сообщ."
+
+    res = f"🏆 <b>{title}</b>\n━━━━━━━━━━━━━━\n"
+    for i, r in enumerate(rows, 1):
+        res += f"{i}. {get_mention(r[0], r[1])} — <code>{r[2]}</code> {unit}\n"
+    await m.answer(res + "━━━━━━━━━━━━━━")
 
 # --- КЛАНЫ ---
 async def cmd_clan(m: types.Message):
@@ -34,22 +90,23 @@ async def cmd_clan(m: types.Message):
     uid = m.from_user.id
     
     if text.startswith('возглавить'):
-        name = " ".join(m.text.split()[2:])
-        if not name: return await m.reply("Введите название!")
+        name = " ".join(m.text.split()[1:])  # Исправлен срез названия
+        if not name: return await m.reply("Введите название пантеона!")
         try:
-            # RETURNING предотвращает ошибку NoneType
+            # RETURNING предотвращает ошибку 'NoneType'
             res = db.execute("INSERT INTO clans (clan_name, leader_id) VALUES (%s, %s) RETURNING clan_id", (name, uid))
             db.execute("UPDATE users SET clan_id = %s, clan_role = 'Глава' WHERE user_id = %s", (res[0], uid))
-            await m.answer(f"🏛 Пантеон «{name}» основан!")
-        except: await m.reply("❌ Ошибка или название занято.")
+            await m.answer(f"🏛 Пантеон «{name}» успешно основан!")
+        except Exception: 
+            await m.reply("❌ Ошибка: название уже занято или вы уже в клане.")
     
     elif text == 'клан':
         u = db.execute("SELECT clan_id, clan_role FROM users WHERE user_id = %s", (uid,))
-        if not u or not u[0]: return await m.reply("🕵️ Вы странник.")
+        if not u or not u[0]: return await m.reply("🕵️ Вы пока вольный странник.")
         c = db.execute("SELECT clan_name, treasury, level FROM clans WHERE clan_id = %s", (u[0],))
         await m.answer(f"🏛 <b>ПАНТЕОН: {c[0]}</b>\n━━━━━━━━━━━━━━\n👤 Роль: {u[1]}\n📈 Ур: {c[2]}\n💰 Казна: {c[1]}")
 
-# --- АДМИНКА (ИСПРАВЛЕННЫЙ ГИВ) ---
+# --- АДМИНКА ---
 async def cmd_admin(m: types.Message):
     text = m.text.lower()
     args = text.split()
@@ -60,7 +117,7 @@ async def cmd_admin(m: types.Message):
         mentions = "".join([f'<a href="tg://user?id={u[0]}">\u200b</a>' for u in users])
         return await m.answer(f"🔔 <b>СБОР ОБИТЕЛИ!</b>\n{mentions}")
 
-    if not m.reply_to_message: return await m.reply("Ответь на сообщение!")
+    if not m.reply_to_message: return await m.reply("Ответь на сообщение цели!")
     target = m.reply_to_message.from_user
 
     if text.startswith('гив'):
