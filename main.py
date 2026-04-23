@@ -1,16 +1,17 @@
+
 import logging
-import random  # Обязательно для ПВП кнопок
+import random
 from aiogram import Bot, Dispatcher, executor, types
-import config, handlers
+import config, handlers, utils  # Добавил импорт utils для имен в ПВП
 from database import db
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=config.API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
-# --- ПОРЯДОК ОБРАБОТКИ (ВАЖНО!) ---
+# --- ПОРЯДОК ОБРАБОТКИ ---
 
-# 1. Профиль и Ю* (Поднимаем в самый верх, чтобы работали мгновенно)
+# 1. Профиль и Ю*
 @dp.message_handler(lambda m: m.text and m.text.lower() in ['ми', 'профиль', 'ю*'])
 async def h_profile(m: types.Message): 
     await handlers.cmd_profile(m)
@@ -60,14 +61,13 @@ async def h_pvp_btn(c: types.CallbackQuery):
     creator_id, bet = int(creator_id), int(bet)
     
     if c.from_user.id == creator_id: 
-        return await c.answer("Нельзя биться с самим собой! Это путь к безумию.", show_alert=True)
+        return await c.answer("Нельзя биться с самим собой!", show_alert=True)
     
-    # Повторная проверка баланса перед самим боем
     p1 = db.execute("SELECT power_points FROM users WHERE user_id = %s", (creator_id,))
     p2 = db.execute("SELECT power_points FROM users WHERE user_id = %s", (c.from_user.id,))
     
     if not p1 or p1[0] < bet or not p2 or p2[0] < bet:
-        return await c.answer("Один из воинов растерял свою мощь! Бой отменен.", show_alert=True)
+        return await c.answer("У кого-то не хватает мощи!", show_alert=True)
 
     winner = random.choice([creator_id, c.from_user.id])
     loser = c.from_user.id if winner == creator_id else creator_id
@@ -75,10 +75,11 @@ async def h_pvp_btn(c: types.CallbackQuery):
     db.execute("UPDATE users SET power_points = power_points + %s WHERE user_id = %s", (bet, winner))
     db.execute("UPDATE users SET power_points = power_points - %s WHERE user_id = %s", (bet, loser))
     
+    # Используем utils.get_mention напрямую
     await c.message.edit_text(
         f"⚔️ <b>БОЙ ЗАВЕРШЕН</b>\n"
         f"━━━━━━━━━━━━━━\n"
-        f"🏆 Победитель: {handlers.get_mention(winner, 'Чемпион')}\n"
+        f"🏆 Победитель: {utils.get_mention(winner, 'Чемпион')}\n"
         f"💰 Выигрыш: <code>{bet}</code> 💠\n"
         f"━━━━━━━━━━━━━━"
     )
