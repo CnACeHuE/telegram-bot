@@ -1,35 +1,30 @@
-
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Tuple
 
 @dataclass
 class Config:
-    BOT_TOKEN: str = os.getenv("BOT_TOKEN", "YOUR_TOKEN_HERE")
+    API_TOKEN: str = os.getenv("BOT_TOKEN", "ТВОЙ_ТОКЕН")
     OWNER_ID: int = int(os.getenv("OWNER_ID", "123456789"))
+    DB_URL: str = os.getenv("DATABASE_URL")
     
-    # Ранги и эволюция
-    RANKS: Dict[int, Tuple[str, str]] = {
-        0: ("Вазон", "🌱"),
-        1: ("Росток", "🌿"),
-        2: ("Цветок", "🌸"),
-        3: ("Древо", "🌳"),
-        4: ("Титан", "⚡"),
-        5: ("Божество", "🔱")
-    }
+    # Использование default_factory исправляет ошибку со скриншота
+    ADM_RANKS: Dict[int, str] = field(default_factory=lambda: {
+        0: "Участник",
+        1: "Модератор",
+        2: "Советник",
+        3: "Архангел"
+    })
+
+    EVO_STAGES: Dict[int, str] = field(default_factory=lambda: {
+        0: "Вазон 🌱",
+        100: "Росток 🌿",
+        500: "Цветок 🌸",
+        2000: "Древо 🌳",
+        10000: "Титан ⚡"
+    })
     
-    EXPERIENCE_PER_RANK: int = 100
-    BASE_MULTIPLIERS: Dict[int, float] = {0: 0.0, 1: 1.0, 2: 2.0, 5: 5.0, 10: 10.0}
-    
-    # Экономика
-    STARTING_POWER: int = 100
-    MAX_ACTIVE_USERS_FOR_PING: int = 50
-    
-    # База данных
-    DB_NAME: str = os.getenv("DB_NAME", "abode_of_gods")
-    DB_USER: str = os.getenv("DB_USER", "postgres")
-    DB_PASSWORD: str = os.getenv("DB_PASSWORD", "")
-    DB_HOST: str = os.getenv("DB_HOST", "localhost")
-    DB_PORT: int = int(os.getenv("DB_PORT", "5432"))
+    LOTTERY_WEIGHTS: list = field(default_factory=lambda: [58, 22, 12, 6, 2])
+    LOTTERY_MULTIS: list = field(default_factory=lambda: [0, 1, 2, 5, 10])
 
 config = Config()
